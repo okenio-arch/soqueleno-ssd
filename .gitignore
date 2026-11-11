@@ -1,0 +1,28 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/*.sqlite3
+storage/*
+logs/*
+!storage/.gitkeep
+!logs/.gitkeep
+
+# Dados locais
+data/
+storage/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# Backups e temporários
+*.bak
+*.backup*
+*.before-*
+
+# Editor e sistema
+.vscode/
+.DS_Store
+Thumbs.db

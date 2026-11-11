@@ -1,0 +1,97 @@
+{
+  "version": "0.8.0",
+  "market": "UK immigration legal services",
+  "sources": [
+    {
+      "id": "iaa_foi_register",
+      "name": "Immigration Advice Authority - Register of currently registered organisations",
+      "category": "official_regulator_dataset",
+      "priority": 1,
+      "source_type": "govuk_xlsx",
+      "access_method": "govuk_ogl_download",
+      "status": "enabled",
+      "url": "https://www.gov.uk/government/publications/register-of-currently-registered-immigration-advice-organisations",
+      "notes": "Official IAA organisation dataset. Snapshot on 2026-07-09, published 2026-09-25. A historical snapshot, not live status.",
+      "config": {
+        "download_link_text": "List of IAA regulated organisations",
+        "importer": "iaa",
+        "license": "Open Government Licence v3.0, subject to exclusions stated by publisher",
+        "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+        "published_at": "2026-09-25",
+        "dataset_as_of": "2026-07-09",
+        "refresh_hours": 720,
+        "authority_label": "IAA",
+        "staleness_warning": "Dataset reflects the position on 2026-07-09; do not treat as live authorisation status."
+      }
+    },
+    {
+      "id": "laa_provider_directory",
+      "name": "Legal Aid Agency - Directory of legal aid providers",
+      "category": "official_legal_aid_provider_dataset",
+      "priority": 2,
+      "source_type": "govuk_xlsx",
+      "access_method": "govuk_ogl_download",
+      "status": "enabled",
+      "url": "https://www.gov.uk/government/publications/directory-of-legal-aid-providers",
+      "notes": "Official Legal Aid Agency spreadsheet. Page last updated 2026-11-04, updated monthly. Contains multiple law categories including Immigration asylum. Import only immigration/asylum records.",
+      "config": {
+        "download_link_text": "Directory of legal aid providers",
+        "importer": "provider_directory",
+        "license": "Open Government Licence v3.0, subject to exclusions stated by publisher",
+        "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+        "published_at": "2026-11-04",
+        "dataset_as_of": "2026-11-04",
+        "refresh_hours": 720,
+        "category_filter": ["immigration", "asylum"],
+        "authority_label": "Legal Aid Agency",
+        "provider_type": "legal_aid_provider"
+      }
+    },
+    {
+      "id": "laa_sw_remote_immigration",
+      "name": "Legal Aid Agency - Remote access immigration and asylum providers (South West)",
+      "category": "official_legal_aid_provider_dataset",
+      "priority": 3,
+      "source_type": "govuk_xlsx",
+      "access_method": "govuk_ogl_download",
+      "status": "enabled",
+      "url": "https://www.gov.uk/government/publications/immigration-providers-south-west-support-directory",
+      "notes": "Official regional remote-access provider spreadsheet. Page updated 2026-11-09. Scope is South West remote-access providers only; it is not a UK-wide list.",
+      "config": {
+        "download_link_text": "Remote access providers – Immigration and Asylum",
+        "importer": "provider_directory",
+        "license": "Open Government Licence v3.0, subject to exclusions stated by publisher",
+        "license_url": "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/",
+        "published_at": "2026-11-09",
+        "dataset_as_of": "2026-11-09",
+        "refresh_hours": 168,
+        "category_filter": ["immigration", "asylum"],
+        "source_scope": "South West England remote access",
+        "authority_label": "Legal Aid Agency",
+        "provider_type": "legal_aid_provider"
+      }
+    },
+    {
+      "id": "law_society_find_solicitor",
+      "name": "The Law Society - Find a Solicitor",
+      "category": "professional_directory",
+      "priority": 50,
+      "source_type": "manual_or_authorisation_pending",
+      "access_method": "review_access_terms_before_automation",
+      "status": "blocked_pending_authorisation",
+      "url": "https://solicitors.lawsociety.org.uk/",
+      "notes": "Automation remains disabled. The Law Society legal conditions prohibit storing/reproducing directory data without prior written permission and prohibit using it for marketing/prospecting lists or commercial information services."
+    },
+    {
+      "id": "sra_firm_data_service",
+      "name": "Solicitors Regulation Authority - Firm Data Web Service",
+      "category": "official_regulator_data_service",
+      "priority": 51,
+      "source_type": "manual_or_authorisation_pending",
+      "access_method": "registration_or_authorised_data_service",
+      "status": "blocked_pending_authorisation",
+      "url": "https://www.sra.org.uk/datasharing/",
+      "notes": "Not used: this is a programmatic data service/API and requires registration and terms review. The SDI build intentionally has no dependency on it."
+    }
+  ]
+}
