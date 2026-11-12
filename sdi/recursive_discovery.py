@@ -47,7 +47,7 @@ def discover_recursive_from_seed(
         "candidates_rejected": int(result.get("candidates_rejected", 0)),
         "organisations_created": int(result.get("organisations_created", 0)),
         "organisations_updated": int(result.get("organisations_updated", 0)),
-        "queue_remaining": 0,
+        "queue_remaining": int(result.get("seed_pages_remaining", 0)),\n        "seed_pages_remaining": int(result.get("seed_pages_remaining", 0)),
         "results": [{
             "seed_url": root,
             "pages_checked": result.get("pages_checked", 0),
