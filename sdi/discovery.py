@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections import deque
 from urllib.parse import urljoin, urlparse, urldefrag
 
 import httpx
@@ -17,7 +18,8 @@ IMMIGRATION_TERMS = (
     "visa", "visas", "skilled worker", "family visa", "asylum", "ukvi",
     "indefinite leave to remain", "ilr", "settlement", "sponsor licence",
 )
-BUSINESS_TERMS = ("solicitor", "law firm", "legal services", "immigration adviser", "immigration advice", "lawyers")
+BUSINESS_TERMS = ("solicitor", "law firm", "legal services", "immigration adviser", "immigration advice", "lawyers", "legal practice", "regulated adviser")
+SEED_NAV_TERMS = ("next", "previous", "page", "directory", "find", "search", "provider", "adviser", "solicitor", "immigration", "results", "view all")
 EXCLUDED_DOMAINS = {
     "facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com",
     "youtube.com", "tiktok.com", "wikipedia.org", "google.com", "bing.com",
@@ -25,11 +27,21 @@ EXCLUDED_DOMAINS = {
 
 
 def relevance(title: str, description: str, text: str) -> tuple[float, list[str]]:
-    corpus = f"{title} {description} {text}".casefold()
-    immigration = sorted({term for term in IMMIGRATION_TERMS if term in corpus})
-    business = sorted({term for term in BUSINESS_TERMS if term in corpus})
-    score = min(1.0, len(immigration) * 0.16 + len(business) * 0.12)
-    return round(score, 2), immigration + business
+    """Score provider evidence, weighting page identity and service language over incidental mentions."""
+    heading = f"{title} {description}".casefold()
+    body = (text or "").casefold()
+    immigration = sorted({term for term in IMMIGRATION_TERMS if term in body})
+    business = sorted({term for term in BUSINESS_TERMS if term in body})
+    heading_immigration = any(term in heading for term in IMMIGRATION_TERMS)
+    heading_business = any(term in heading for term in BUSINESS_TERMS)
+    if not immigration or not business:
+        return 0.0, immigration + business
+    score = min(0.55, len(immigration) * 0.07) + min(0.25, len(business) * 0.08)
+    score += 0.12 if heading_immigration else 0.0
+    score += 0.08 if heading_business else 0.0
+    if len(body) < 350:
+        score *= 0.65
+    return round(min(score, 1.0), 2), immigration + business
 
 
 def _ensure_source(db_path: str, seed_url: str) -> str:
@@ -76,16 +88,28 @@ def _is_excluded(domain: str) -> bool:
     return any(domain == item or domain.endswith("." + item) for item in EXCLUDED_DOMAINS)
 
 
-def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15, timeout: int = 12, delay: float = 1.0, min_score: float = 0.28, source_id: str | None = None) -> dict:
+def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15, max_seed_pages: int = 8, max_seed_depth: int = 2, timeout: int = 12, delay: float = 1.0, min_score: float = 0.28, source_id: str | None = None) -> dict:
     """Inspect one public directory/source page and verify linked external organisation websites.
 
     This is deliberately a bounded one-seed discovery pass, not a general web search engine.
     """
     seed = validate_public_url(seed_url)
-    source_id = source_id or _ensure_source(db_path, seed)
+    if not source_id:
+        raise RuntimeError("A descoberta exige uma fonte-semente previamente registada e aprovada.")
     with connect(db_path) as conn:
-        if not conn.execute("SELECT 1 FROM sources WHERE source_id=?", (source_id,)).fetchone():
+        source_row = conn.execute(
+            "SELECT status,source_type,config_json FROM sources WHERE source_id=?", (source_id,)
+        ).fetchone()
+        if not source_row:
             raise RuntimeError(f"Fonte {source_id} não existe no Source Registry")
+        if source_row["status"] != "enabled" or source_row["source_type"] != "html_directory_seed":
+            raise RuntimeError("A fonte não está aprovada como seed HTML ativa.")
+        try:
+            source_config = __import__("json").loads(source_row["config_json"] or "{}")
+        except (TypeError, ValueError):
+            source_config = {}
+        if not (source_config.get("terms_reviewed") and source_config.get("crawl_allowed") and source_config.get("reuse_basis")):
+            raise RuntimeError("A seed não tem revisão de termos e base de reutilização registadas.")
         run_id = conn.execute(
             "INSERT INTO discovery_runs(seed_url,source_id,run_type) VALUES(?,?,'html_seed_discovery')",
             (seed, source_id),
@@ -98,33 +122,51 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
 
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
-            if not _robots_allows(client, seed, robots_cache):
-                raise CrawlBlocked("robots.txt não autoriza a consulta da fonte inicial")
-            response = bounded_get(client, seed, max_bytes=2_000_000, allowed_hosts={(urlparse(seed).hostname or "").lower()})
-            if response.status_code != 200:
-                raise CrawlBlocked(f"Fonte inicial respondeu HTTP {response.status_code}; redirects não são seguidos automaticamente")
-            if "text/html" not in response.headers.get("content-type", "").lower():
-                raise CrawlBlocked("A fonte inicial não devolveu HTML")
-            _, _, _, soup = _extract_page(response)
-            result["pages_checked"] += 1
-            links: dict[str, tuple[str, str]] = {}
+            seed_host = (urlparse(seed).hostname or "").lower()
             seed_domain = domain_of(seed)
-            for anchor in soup.find_all("a", href=True):
-                raw = canonical_page_url(urldefrag(urljoin(seed, anchor["href"]))[0])
-                try:
-                    candidate_url = canonical_page_url(validate_public_url(raw))
-                except (CrawlBlocked, ValueError):
+            seed_queue = deque([(seed, 0)])
+            seed_seen: set[str] = set()
+            links: dict[str, tuple[str, str]] = {}
+            page_budget = max(1, min(int(max_seed_pages), 30))
+            depth_budget = max(0, min(int(max_seed_depth), 4))
+            while seed_queue and len(seed_seen) < page_budget and len(links) < max_candidates:
+                seed_page, seed_depth = seed_queue.popleft()
+                if seed_page in seed_seen:
                     continue
-                domain = domain_of(candidate_url)
-                if not domain or domain == seed_domain or _is_excluded(domain):
+                seed_seen.add(seed_page)
+                if not _robots_allows(client, seed_page, robots_cache):
+                    result["errors"].append({"seed_page": seed_page, "error": "robots.txt não autoriza ou não pôde ser consultado"})
                     continue
-                if candidate_url.lower().endswith((".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip")):
+                response = bounded_get(client, seed_page, max_bytes=2_000_000, allowed_hosts={seed_host})
+                if response.status_code != 200 or "text/html" not in response.headers.get("content-type", "").lower():
+                    result["errors"].append({"seed_page": seed_page, "error": f"Página-semente não HTML ou HTTP {response.status_code}"})
                     continue
-                label = clean(anchor.get_text(" ", strip=True)) or ""
-                if domain not in links or len(label) > len(links[domain][1]):
-                    links[domain] = (candidate_url, label)
-                if len(links) >= max_candidates:
-                    break
+                _, _, _, soup = _extract_page(response)
+                result["pages_checked"] += 1
+                for anchor in soup.find_all("a", href=True):
+                    raw = canonical_page_url(urldefrag(urljoin(str(response.url), anchor["href"]))[0])
+                    label = clean(anchor.get_text(" ", strip=True)) or ""
+                    try:
+                        candidate_url = canonical_page_url(validate_public_url(raw))
+                    except (CrawlBlocked, ValueError):
+                        continue
+                    domain = domain_of(candidate_url)
+                    if not domain or candidate_url.lower().endswith((".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip")):
+                        continue
+                    if domain == seed_domain:
+                        path_and_label = f"{urlparse(candidate_url).path} {label}".casefold()
+                        is_directory_navigation = any(term in path_and_label for term in SEED_NAV_TERMS)
+                        if seed_depth < depth_budget and is_directory_navigation and candidate_url not in seed_seen:
+                            seed_queue.append((candidate_url, seed_depth + 1))
+                        continue
+                    if _is_excluded(domain):
+                        continue
+                    if domain not in links or len(label) > len(links[domain][1]):
+                        links[domain] = (candidate_url, label)
+                    if len(links) >= max_candidates:
+                        break
+                if delay > 0 and seed_queue:
+                    time.sleep(delay)
 
             for domain, (candidate_url, anchor_text) in list(links.items()):
                 blocked_reason = _blocked_source_reason(db_path, domain)
