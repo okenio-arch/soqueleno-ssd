@@ -314,7 +314,10 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                     for field, value in fields.items():
                         if value:
                             conn.execute(
-                                "INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'website_observation')",
+                                """INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                                VALUES(?,?,?,?,?,'website_observation',0.60,'Organisation website')
+                                ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET
+                                collected_at=CURRENT_TIMESTAMP,confidence=0.60,evidence_status='website_observation'""",
                                 (organisation_id, SOURCE_ID, url, field, value),
                             )
                     org = conn.execute("SELECT immigration_services,phone,public_email FROM organisations WHERE organisation_id=?", (organisation_id,)).fetchone()
@@ -326,9 +329,15 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         ("; ".join(merged), "; ".join(merged), email, phone, organisation_id),
                     )
                     if email:
-                        conn.execute("INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'website_observation')", (organisation_id, SOURCE_ID, url, "public_email", email))
+                        conn.execute("""INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                            VALUES(?,?,?,?,?,'website_observation',0.60,'Organisation website')
+                            ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET collected_at=CURRENT_TIMESTAMP""",
+                            (organisation_id, SOURCE_ID, url, "public_email", email))
                     if phone:
-                        conn.execute("INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'website_observation')", (organisation_id, SOURCE_ID, url, "public_phone", phone))
+                        conn.execute("""INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                            VALUES(?,?,?,?,?,'website_observation',0.60,'Organisation website')
+                            ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET collected_at=CURRENT_TIMESTAMP""",
+                            (organisation_id, SOURCE_ID, url, "public_phone", phone))
                     for anchor in soup.find_all("a", href=True):
                         raw = urldefrag(urljoin(final_url, anchor["href"]))[0]
                         label = clean(anchor.get_text(" ", strip=True)) or ""
