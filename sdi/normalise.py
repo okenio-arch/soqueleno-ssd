@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 
 def clean(value):
@@ -86,3 +86,16 @@ def domain_of(url: str | None) -> str | None:
     except ValueError:
         return None
     return host.lower().removeprefix("www.") or None
+
+
+def canonical_page_url(value: str) -> str:
+    """Canonicalise page URLs while preserving functional query parameters."""
+    parsed = urlparse(value)
+    tracking = {"gclid", "fbclid", "msclkid", "mc_cid", "mc_eid", "ref_src"}
+    query = [(key, item) for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+             if key.casefold() not in tracking and not key.casefold().startswith("utm_")]
+    query.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
+    path = parsed.path or "/"
+    if path != "/":
+        path = path.rstrip("/")
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, "", urlencode(query, doseq=True), ""))
