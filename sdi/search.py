@@ -9,7 +9,7 @@ def _fts_query(query: str) -> str:
     tokens = [token for token in tokens if token]
     if not tokens:
         raise ValueError("A pesquisa precisa de conter pelo menos uma palavra ou número")
-    return " OR ".join(f'"{token}"*' for token in tokens[:12])
+    return " AND ".join(f'"{token}"*' for token in tokens[:12])
 
 def _limit(value: int, maximum: int = 100) -> int:
     try:
