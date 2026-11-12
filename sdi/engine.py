@@ -10,7 +10,7 @@ from .config import ROOT, setting
 from .db import connect, initialise
 from .registry import load_sources, get_source_config
 from .datasets import collect_dataset_source
-from .discovery import discover_from_seed
+from .recursive_discovery import discover_recursive_from_seed
 from .crawler import crawl_organisation
 
 _ENGINE_LOCK = threading.Lock()
@@ -101,10 +101,14 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     if not (cfg.get("terms_reviewed") and cfg.get("crawl_allowed") and cfg.get("reuse_basis")):
                         report["results"].append({"source_id": sid, "name": source["name"], "status": "skipped", "reason": "A fonte precisa de base de reutilização e revisão de termos antes da recolha"})
                         continue
-                    result = discover_from_seed(source["url"], db_path, source_id=sid,
-                                                max_candidates=int(cfg.get("max_candidates_per_run", 20)),
-                                                timeout=timeout,
-                                                delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "1.0")))
+                    result = discover_recursive_from_seed(
+                        source["url"], db_path, source_id=sid,
+                        max_depth=int(cfg.get("recursive_max_depth", setting("SDI_RECURSIVE_MAX_DEPTH", "2"))),
+                        max_domains=int(cfg.get("recursive_max_domains", setting("SDI_RECURSIVE_MAX_DOMAINS", "30"))),
+                        max_candidates_per_seed=int(cfg.get("max_candidates_per_run", 20)),
+                        timeout=timeout,
+                        delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "1.0")),
+                    )
                     with connect(db_path) as conn:
                         conn.execute("UPDATE sources SET last_success_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (sid,))
                     report["sources_run"] += 1
