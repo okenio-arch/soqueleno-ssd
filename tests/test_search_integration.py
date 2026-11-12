@@ -19,7 +19,7 @@ class SearchIntegrationTests(unittest.TestCase):
             org_id = conn.execute("SELECT organisation_id FROM organisations").fetchone()[0]
             conn.execute("""INSERT INTO crawled_pages(organisation_id,source_id,url,http_status,title,description,text_content,crawl_status,is_indexable)
                 VALUES(?,?,?,?,?,?,?,?,1)""",
-                (org_id, 'organisation_websites', 'https://northstar.example/services',
+                (org_id, 'test', 'https://northstar.example/services',
                  200, 'Immigration services', 'UK visa advice',
                  'Our team advises on skilled worker visa applications and family immigration.', 'success'))
 
