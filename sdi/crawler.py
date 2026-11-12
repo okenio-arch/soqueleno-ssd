@@ -64,6 +64,58 @@ def validate_public_url(url: str) -> str:
     return value
 
 
+def bounded_get(client: httpx.Client, url: str, *, max_bytes: int = 2_000_000,
+                allowed_hosts: set[str] | None = None, max_redirects: int = 3) -> httpx.Response:
+    """GET a public URL with streamed byte limits and explicit redirect validation."""
+    current = validate_public_url(url)
+    for hop in range(max(0, min(int(max_redirects), 5)) + 1):
+        parsed = urlparse(current)
+        host = (parsed.hostname or "").lower()
+        if allowed_hosts is not None and host not in allowed_hosts:
+            raise CrawlBlocked("Host fora da allowlist da fonte")
+        # Re-resolve immediately before every network hop; redirects are never followed implicitly.
+        current = validate_public_url(current)
+        request = client.build_request("GET", current)
+        response = client.send(request, stream=True, follow_redirects=False)
+        try:
+            peer = response.extensions.get("network_stream")
+            if peer is not None:
+                address = peer.get_extra_info("server_addr")
+                if address:
+                    try:
+                        if not ipaddress.ip_address(address[0]).is_global:
+                            raise CrawlBlocked("A ligação terminou num endereço IP não público")
+                    except ValueError as exc:
+                        raise CrawlBlocked("Endereço IP remoto inválido") from exc
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location or hop >= max_redirects:
+                    raise CrawlBlocked("Redirecionamento ausente ou limite de redirecionamentos atingido")
+                target = validate_public_url(urljoin(current, location))
+                target_host = (urlparse(target).hostname or "").lower()
+                if allowed_hosts is not None and target_host not in allowed_hosts:
+                    raise CrawlBlocked("Redirecionamento para host não autorizado")
+                current = target
+                continue
+            length = response.headers.get("content-length")
+            if length and length.isdigit() and int(length) > max_bytes:
+                raise CrawlBlocked(f"Resposta excede o limite de {max_bytes} bytes")
+            chunks = []
+            total = 0
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise CrawlBlocked(f"Resposta excede o limite de {max_bytes} bytes")
+                chunks.append(chunk)
+            return httpx.Response(
+                response.status_code, headers=response.headers, content=b"".join(chunks),
+                request=request, extensions=response.extensions,
+            )
+        finally:
+            response.close()
+    raise CrawlBlocked("Limite de redirecionamentos atingido")
+
+
 def _robots_parser(client: httpx.Client, url: str, cache: dict[str, RobotFileParser | None]) -> RobotFileParser | None:
     parsed = urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}".lower()
@@ -71,7 +123,7 @@ def _robots_parser(client: httpx.Client, url: str, cache: dict[str, RobotFilePar
         return cache[origin]
     robots_url = origin + "/robots.txt"
     try:
-        response = client.get(robots_url, headers={"User-Agent": USER_AGENT})
+        response = bounded_get(client, robots_url, max_bytes=512_000)
         if response.status_code in (401, 403, 429) or response.status_code >= 500 or 300 <= response.status_code < 400:
             cache[origin] = None
             return None
@@ -97,7 +149,7 @@ def _sitemaps(client: httpx.Client, origin: str, robots_cache: dict, max_urls: i
     sitemap_urls = []
     # RobotFileParser does not expose Sitemap directives; parse robots.txt separately.
     try:
-        resp = client.get(origin.rstrip("/") + "/robots.txt", headers={"User-Agent": USER_AGENT})
+        resp = bounded_get(client, origin.rstrip("/") + "/robots.txt", max_bytes=512_000)
         if resp.status_code == 200:
             for line in resp.text.splitlines():
                 if line.lower().startswith("sitemap:"):
@@ -110,7 +162,7 @@ def _sitemaps(client: httpx.Client, origin: str, robots_cache: dict, max_urls: i
             sitemap = validate_public_url(sitemap)
             if not _robots_allows(client, sitemap, robots_cache):
                 continue
-            response = client.get(sitemap)
+            response = bounded_get(client, sitemap, max_bytes=2_000_000)
             if response.status_code != 200:
                 continue
             root = ET.fromstring(response.content)
@@ -210,7 +262,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                 if not _robots_allows(client, url, robots_cache):
                     errors.append({"url": url, "error": "robots.txt não autoriza ou não pôde ser consultado"})
                     continue
-                response = client.get(url)
+                response = bounded_get(client, url, max_bytes=2_000_000)
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if location:
@@ -231,14 +283,25 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         conn.execute("UPDATE crawled_pages SET is_indexable=0,fetched_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
                     continue
                 with connect(db_path) as conn:
+                    duplicate = conn.execute(
+                        """SELECT url FROM crawled_pages WHERE organisation_id=? AND content_hash=?
+                        AND url<>? AND is_indexable=1 ORDER BY fetched_at ASC LIMIT 1""",
+                        (organisation_id, digest, url),
+                    ).fetchone()
+                    canonical_url = duplicate["url"] if duplicate else None
                     conn.execute(
-                        """INSERT INTO crawled_pages(organisation_id,source_id,url,final_url,http_status,title,description,text_content,content_hash,crawl_status,depth,is_indexable)
-                        VALUES(?,?,?,?,?,?,?,?,?,'success',?,1)
+                        """INSERT INTO crawled_pages(organisation_id,source_id,url,final_url,http_status,title,description,text_content,content_hash,crawl_status,depth,is_indexable,duplicate_of_url)
+                        VALUES(?,?,?,?,?,?,?,?,?,'success',?,?,?)
                         ON CONFLICT(url) DO UPDATE SET organisation_id=excluded.organisation_id,final_url=excluded.final_url,http_status=excluded.http_status,
                         title=excluded.title,description=excluded.description,text_content=excluded.text_content,content_hash=excluded.content_hash,
-                        fetched_at=CURRENT_TIMESTAMP,crawl_status='success',error=NULL,depth=excluded.depth,is_indexable=1""",
-                        (organisation_id, SOURCE_ID, url, final_url, response.status_code, title, description, text, digest, depth),
+                        fetched_at=CURRENT_TIMESTAMP,crawl_status='success',error=NULL,depth=excluded.depth,is_indexable=excluded.is_indexable,
+                        duplicate_of_url=excluded.duplicate_of_url""",
+                        (organisation_id, SOURCE_ID, url, final_url, response.status_code, title, description, text, digest, depth,
+                         0 if canonical_url else 1, canonical_url),
                     )
+                    if canonical_url:
+                        pages += 1
+                        continue
                     fields = {"website_page_title": title, "website_page_description": description}
                     signals = _service_signals(f"{title} {description} {text}")
                     if signals:
