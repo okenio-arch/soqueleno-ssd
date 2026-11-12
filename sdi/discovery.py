@@ -134,21 +134,29 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                     depth=0,attempts=0,last_error=NULL""",
                     (seed, seed, seed_domain, source_id),
                 )
-            seed_pages = conn.execute(
-                """SELECT discovered_url,depth FROM discovered_urls
-                WHERE source_id=? AND discovery_type='seed_page'
-                AND status IN ('queued','failed') AND attempts<3
-                ORDER BY depth,discovered_at LIMIT ?""",
-                (source_id, page_budget),
-            ).fetchall()
+            conn.execute(
+                """UPDATE discovered_urls SET status='queued'
+                WHERE source_id=? AND discovery_type='seed_page' AND status='failed' AND attempts<3""",
+                (source_id,),
+            )
 
         links: dict[str, tuple[str, str]] = {}
+        processed_seed_pages = 0
         with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
-            for seed_item in seed_pages:
-                if len(links) >= max_candidates:
+            while processed_seed_pages < page_budget and len(links) < max_candidates:
+                with connect(db_path) as conn:
+                    seed_item = conn.execute(
+                        """SELECT discovered_url,depth FROM discovered_urls
+                        WHERE source_id=? AND discovery_type='seed_page'
+                        AND status='queued' AND attempts<3
+                        ORDER BY depth,discovered_at LIMIT 1""",
+                        (source_id,),
+                    ).fetchone()
+                if seed_item is None:
                     break
                 seed_page = seed_item["discovered_url"]
                 seed_depth = int(seed_item["depth"] or 0)
+                processed_seed_pages += 1
                 with connect(db_path) as conn:
                     conn.execute(
                         """UPDATE discovered_urls SET status='processing',attempts=attempts+1,
