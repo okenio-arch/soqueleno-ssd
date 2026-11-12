@@ -299,6 +299,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
     queue = deque([(canonical_page_url(start), 0)])
     seen: set[str] = set()
     pages = external_candidates = 0
+    indexed_pages = excluded_pages = 0
     errors: list[dict] = []
     robots_cache: dict = {}
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
@@ -368,6 +369,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         )
                     if canonical_url or not indexable:
                         pages += 1
+                        excluded_pages += 1
                         continue
                     fields = {"website_page_title": title, "website_page_description": description}
                     signals = _service_signals(f"{title} {description} {text}")
@@ -421,6 +423,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                             if cur.rowcount > 0:
                                 external_candidates += 1
                 pages += 1
+                indexed_pages += 1
                 if delay > 0:
                     time.sleep(delay)
             except (httpx.HTTPError, CrawlBlocked, ValueError) as exc:
@@ -430,5 +433,5 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
         conn.execute("UPDATE organisations SET website_crawl_status=?,website_last_crawled_at=CASE WHEN ? > 0 THEN CURRENT_TIMESTAMP ELSE website_last_crawled_at END WHERE organisation_id=?",
                      (final_status, pages, organisation_id))
     return {"organisation_id": organisation_id, "start_url": start, "pages_crawled": pages,
-            "unique_urls_seen": len(seen), "external_candidates_recorded": external_candidates,
+            "unique_urls_seen": len(seen), "pages_indexed": indexed_pages,\n            "pages_excluded": excluded_pages, "external_candidates_recorded": external_candidates,
             "crawl_status": final_status, "errors": errors}
