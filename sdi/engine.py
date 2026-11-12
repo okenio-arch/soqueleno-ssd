@@ -35,6 +35,29 @@ def _source_due(conn, source_id: str, refresh_hours: int) -> bool:
     return not row or row["last_success_at"] is None or float(row["age_hours"] or 0) >= max(1, refresh_hours)
 
 
+def recover_interrupted_work(db_path: str | None = None) -> dict:
+    """Mark stale jobs and runs interrupted after a process restart."""
+    db_path = db_path or str(ROOT / "data" / "sdi.sqlite3")
+    with connect(db_path) as conn:
+        jobs = conn.execute(
+            """UPDATE discovery_jobs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            error=coalesce(error,'Recovered after process interruption')
+            WHERE status='running' AND started_at IS NOT NULL
+            AND julianday('now')-julianday(started_at) > (15.0/1440.0)"""
+        ).rowcount
+        queued = conn.execute(
+            """UPDATE discovery_jobs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            error=coalesce(error,'Queued job expired before execution')
+            WHERE status='queued' AND julianday('now')-julianday(created_at) > (30.0/1440.0)"""
+        ).rowcount
+        runs = conn.execute(
+            """UPDATE discovery_runs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            error=coalesce(error,'Recovered after process interruption')
+            WHERE status='running' AND julianday('now')-julianday(started_at) > (15.0/1440.0)"""
+        ).rowcount
+    return {"jobs_interrupted": jobs + queued, "runs_interrupted": runs}
+
+
 def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait_for_lock: bool = False) -> dict:
     """Run the complete focused discovery pipeline from the built-in source registry.
 
@@ -58,6 +81,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
     run_id = None
     try:
         initialise(db_path)
+        recover_interrupted_work(db_path)
         load_sources(str(ROOT / "config" / "sources.json"), db_path)
         with connect(db_path) as conn:
             run_id = conn.execute(
@@ -179,7 +203,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                 conn.execute(
                     """UPDATE discovery_runs SET finished_at=CURRENT_TIMESTAMP,pages_checked=?,candidates_found=?,
                     organisations_created=?,organisations_updated=?,datasets_imported=?,status=?,error=? WHERE run_id=?""",
-                    (report["pages_indexed"], report["external_candidates_recorded"], report["organisations_created"],
+                    (report["pages_indexed"] + report["seed_pages_checked"], report["seed_candidates_found"], report["organisations_created"],
                      report["organisations_updated"], report["datasets_imported"], report["status"],
                      json.dumps(report["errors"][:10], ensure_ascii=False) if report["errors"] else None, run_id),
                 )
