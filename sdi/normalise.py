@@ -78,7 +78,11 @@ def domain_of(url: str | None) -> str | None:
     if not url:
         return None
     try:
-        host = urlparse(url).hostname or ""
+        parsed = urlparse(url)
+        # Force validation of malformed ports instead of silently accepting
+        # a hostname from a URL such as https://example.com:abc.
+        _ = parsed.port
+        host = parsed.hostname or ""
     except ValueError:
         return None
     return host.lower().removeprefix("www.") or None
