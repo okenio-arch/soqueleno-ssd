@@ -121,7 +121,7 @@ def bounded_get(client: httpx.Client, url: str, *, max_bytes: int = 2_000_000,
                 peer_ip = ipaddress.ip_address(address[0])
             except ValueError as exc:
                 raise CrawlBlocked("Endereço IP remoto inválido") from exc
-            if not peer_ip.is_global or peer_ip not in expected_addresses:
+            if not peer_ip.is_global or peer_ip != pinned_ip:
                 raise CrawlBlocked("O IP remoto não corresponde ao destino DNS fixado")
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = response.headers.get("location")
