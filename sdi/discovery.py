@@ -181,6 +181,13 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                             checked_at=CURRENT_TIMESTAMP""",
                             (run_id, seed, candidate_url, domain, anchor_text, blocked_reason),
                         )
+                    with connect(db_path) as conn:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO discovered_urls
+                            (parent_url,discovered_url,domain,discovery_type,status,anchor_text,source_id,depth)
+                            VALUES(?,?,?,'seed_candidate','rejected_source_policy',?,?,1)""",
+                            (seed, candidate_url, domain, anchor_text[:300], source_id),
+                        )
                     result["candidates_found"] += 1
                     result["candidates_rejected"] += 1
                     result["candidates"].append({
