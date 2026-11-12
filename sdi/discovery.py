@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import json
 import time
 from collections import deque
 from urllib.parse import urljoin, urlparse, urldefrag
@@ -42,19 +42,6 @@ def relevance(title: str, description: str, text: str) -> tuple[float, list[str]
     if len(body) < 350:
         score *= 0.65
     return round(min(score, 1.0), 2), immigration + business
-
-
-def _ensure_source(db_path: str, seed_url: str) -> str:
-    seed_domain = domain_of(seed_url) or "unknown"
-    source_id = "discovery_" + hashlib.sha256(seed_domain.encode("utf-8")).hexdigest()[:12]
-    with connect(db_path) as conn:
-        conn.execute(
-            """INSERT INTO sources(source_id,name,url,category,priority,access_method,status,notes)
-            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET url=excluded.url,updated_at=CURRENT_TIMESTAMP""",
-            (source_id, f"Public discovery seed: {seed_domain}", f"{urlparse(seed_url).scheme}://{urlparse(seed_url).netloc}/", "discovery", 10,
-             "robots_checked_http", "enabled", "User-supplied public seed page; linked candidate sites are fetched only after robots checks."),
-        )
-    return source_id
 
 
 def _extract_page(response: httpx.Response) -> tuple[str, str, str, BeautifulSoup]:
@@ -105,7 +92,7 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
         if source_row["status"] != "enabled" or source_row["source_type"] != "html_directory_seed":
             raise RuntimeError("A fonte não está aprovada como seed HTML ativa.")
         try:
-            source_config = __import__("json").loads(source_row["config_json"] or "{}")
+            source_config = json.loads(source_row["config_json"] or "{}")
         except (TypeError, ValueError):
             source_config = {}
         if not (source_config.get("terms_reviewed") and source_config.get("crawl_allowed") and source_config.get("reuse_basis")):
