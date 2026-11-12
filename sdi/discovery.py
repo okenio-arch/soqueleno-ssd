@@ -141,7 +141,7 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                     if not domain or candidate_url.lower().endswith((".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip")):
                         continue
                     if domain == seed_domain:
-                        path_and_label = f"{urlparse(candidate_url).path} {label}".casefold()
+                        path_and_label = f"{urlparse(candidate_url).path} {urlparse(candidate_url).query} {label}".casefold()
                         is_directory_navigation = any(term in path_and_label for term in SEED_NAV_TERMS)
                         if seed_depth < depth_budget and is_directory_navigation and candidate_url not in seed_seen:
                             seed_queue.append((candidate_url, seed_depth + 1))
