@@ -36,6 +36,26 @@ def discover_recursive_from_seed(
     queue = deque([(root, 0, None, "")])
     queued_domains = {domain_of(root)}
     processed_domains: set[str] = set()
+    # Recover work left queued or processing by a previous interrupted run.
+    # Failed domains get at most three attempts across runs.
+    with connect(db_path) as conn:
+        conn.execute(
+            """UPDATE discovered_urls SET status='queued',last_error=coalesce(last_error,'Recovered after interrupted run')
+            WHERE source_id=? AND discovery_type='recursive_seed' AND status='processing' AND attempts<3""",
+            (source_id,),
+        )
+        pending = conn.execute(
+            """SELECT discovered_url,depth,parent_url,anchor_text,domain FROM discovered_urls
+            WHERE source_id=? AND discovery_type='recursive_seed'
+            AND status IN ('queued','failed') AND attempts<3
+            ORDER BY depth,discovered_at LIMIT ?""",
+            (source_id, max_domains * 2),
+        ).fetchall()
+    for item in pending:
+        if item["domain"] and item["domain"] not in queued_domains:
+            queue.append((item["discovered_url"], int(item["depth"] or 1),
+                          item["parent_url"], item["anchor_text"] or ""))
+            queued_domains.add(item["domain"])
     report = {
         "status": "completed",
         "seed_url": root,
@@ -63,7 +83,8 @@ def discover_recursive_from_seed(
         if parent_url:
             with connect(db_path) as conn:
                 conn.execute(
-                    "UPDATE discovered_urls SET status='processing' WHERE discovered_url=?",
+                    """UPDATE discovered_urls SET status='processing',attempts=attempts+1,
+                    last_attempt_at=CURRENT_TIMESTAMP,last_error=NULL WHERE discovered_url=?""",
                     (current_url,),
                 )
 
@@ -125,8 +146,8 @@ def discover_recursive_from_seed(
                 with connect(db_path) as conn:
                     conn.execute(
                         """INSERT INTO discovered_urls
-                        (parent_url,discovered_url,domain,discovery_type,status,anchor_text)
-                        VALUES(?,?,?,?,?,?)
+                        (parent_url,discovered_url,domain,discovery_type,status,anchor_text,source_id,depth)
+                        VALUES(?,?,?,?,?,?,?,?)
                         ON CONFLICT(discovered_url) DO UPDATE SET
                             parent_url=excluded.parent_url,
                             domain=excluded.domain,
@@ -136,9 +157,10 @@ def discover_recursive_from_seed(
                                 THEN excluded.status
                                 ELSE discovered_urls.status
                             END,
-                            anchor_text=excluded.anchor_text""",
+                            anchor_text=excluded.anchor_text,
+                            source_id=excluded.source_id,depth=excluded.depth""",
                         (current_url, candidate_url, candidate_domain, "recursive_seed", next_status,
-                         (candidate["anchor_text"] or "")[:300]),
+                         (candidate["anchor_text"] or "")[:300], source_id, depth + 1),
                     )
 
                 if next_status == "queued":
@@ -153,16 +175,16 @@ def discover_recursive_from_seed(
             if parent_url:
                 with connect(db_path) as conn:
                     conn.execute(
-                        "UPDATE discovered_urls SET status='failed' WHERE discovered_url=?",
-                        (current_url,),
+                        "UPDATE discovered_urls SET status='failed',last_error=? WHERE discovered_url=?",
+                        (str(exc)[:300], current_url),
                     )
         else:
             if parent_url:
                 final_status = "failed" if int(result.get("pages_checked", 0)) == 0 else "processed"
                 with connect(db_path) as conn:
                     conn.execute(
-                        "UPDATE discovered_urls SET status=? WHERE discovered_url=?",
-                        (final_status, current_url),
+                        "UPDATE discovered_urls SET status=?,last_error=? WHERE discovered_url=?",
+                        (final_status, None if final_status == "processed" else "Seed page produced no readable candidates", current_url),
                     )
 
     report["domains_processed"] = len(processed_domains)
