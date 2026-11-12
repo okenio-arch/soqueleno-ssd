@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from .crawler import CrawlBlocked, USER_AGENT, ROBOT_TOKEN, _robots_allows, validate_public_url, bounded_get
 from .db import connect
-from .normalise import clean, domain_of, normalise_name
+from .normalise import clean, domain_of, normalise_name, canonical_page_url
 
 SOURCE_ID = "discovery_web"
 IMMIGRATION_TERMS = (
@@ -94,9 +94,9 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
             links: dict[str, tuple[str, str]] = {}
             seed_domain = domain_of(seed)
             for anchor in soup.find_all("a", href=True):
-                raw = urldefrag(urljoin(seed, anchor["href"]))[0]
+                raw = canonical_page_url(urldefrag(urljoin(seed, anchor["href"]))[0])
                 try:
-                    candidate_url = validate_public_url(raw)
+                    candidate_url = canonical_page_url(validate_public_url(raw))
                 except (CrawlBlocked, ValueError):
                     continue
                 domain = domain_of(candidate_url)
