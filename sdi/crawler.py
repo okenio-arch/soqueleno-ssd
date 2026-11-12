@@ -14,7 +14,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .db import connect
-from .normalise import normalise_url, domain_of, clean
+from .normalise import normalise_url, domain_of, clean, canonical_page_url
 
 SOURCE_ID = "organisation_websites"
 USER_AGENT = "SoquelenoSDI/0.8 (local UK immigration provider research index)"
@@ -160,31 +160,44 @@ def _robots_allows(client: httpx.Client, url: str, cache: dict) -> bool:
 
 def _sitemaps(client: httpx.Client, origin: str, robots_cache: dict, max_urls: int) -> list[str]:
     parser = _robots_parser(client, origin + "/", robots_cache)
-    sitemap_urls = parser.site_maps() if parser else []
-    urls: list[str] = []
-    for sitemap in sitemap_urls[:3]:
+    pending = list(parser.site_maps() if parser else [])
+    seen_sitemaps: set[str] = set()
+    page_urls: list[str] = []
+    origin_domain = domain_of(origin)
+    origin_host = (urlparse(origin).hostname or "").lower()
+    while pending and len(seen_sitemaps) < 5 and len(page_urls) < max_urls:
+        sitemap = pending.pop(0)
         try:
-            sitemap = validate_public_url(sitemap)
+            sitemap = canonical_page_url(validate_public_url(sitemap))
+            if sitemap in seen_sitemaps or domain_of(sitemap) != origin_domain:
+                continue
+            seen_sitemaps.add(sitemap)
             if not _robots_allows(client, sitemap, robots_cache):
                 continue
-            response = bounded_get(client, sitemap, max_bytes=2_000_000, allowed_hosts={(urlparse(origin).hostname or "").lower()})
+            response = bounded_get(client, sitemap, max_bytes=2_000_000, allowed_hosts={origin_host})
             if response.status_code != 200:
                 continue
             root = ET.fromstring(response.content)
+            is_index = root.tag.lower().endswith("sitemapindex")
             for node in root.iter():
-                if node.tag.endswith("loc") and node.text:
-                    candidate = node.text.strip()
-                    try:
-                        candidate = validate_public_url(candidate)
-                    except CrawlBlocked:
-                        continue
-                    if domain_of(candidate) == domain_of(origin):
-                        urls.append(candidate)
-                        if len(urls) >= max_urls:
-                            return urls
+                if not node.tag.lower().endswith("loc") or not node.text:
+                    continue
+                try:
+                    candidate = canonical_page_url(validate_public_url(node.text.strip()))
+                except CrawlBlocked:
+                    continue
+                if domain_of(candidate) != origin_domain:
+                    continue
+                if is_index:
+                    if candidate not in seen_sitemaps and candidate not in pending:
+                        pending.append(candidate)
+                elif candidate not in page_urls:
+                    page_urls.append(candidate)
+                    if len(page_urls) >= max_urls:
+                        break
         except (httpx.HTTPError, ET.ParseError, CrawlBlocked, ValueError):
             continue
-    return urls
+    return page_urls
 
 
 def _parse_page(response: httpx.Response) -> tuple[str, str, str, BeautifulSoup, bool]:
@@ -245,7 +258,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
     _ensure_website_source(db_path)
     with connect(db_path) as conn:
         conn.execute("UPDATE organisations SET website_last_attempt_at=CURRENT_TIMESTAMP,website_crawl_status='running' WHERE organisation_id=?", (organisation_id,))
-    queue = deque([(start, 0)])
+    queue = deque([(canonical_page_url(start), 0)])
     seen: set[str] = set()
     pages = external_candidates = 0
     errors: list[dict] = []
@@ -261,7 +274,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                 continue
             seen.add(url)
             try:
-                url = validate_public_url(url)
+                url = canonical_page_url(validate_public_url(url))
                 if domain_of(url) != host:
                     continue
                 if not _robots_allows(client, url, robots_cache):
@@ -342,7 +355,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         raw = urldefrag(urljoin(final_url, anchor["href"]))[0]
                         label = clean(anchor.get_text(" ", strip=True)) or ""
                         try:
-                            candidate = validate_public_url(raw)
+                            candidate = canonical_page_url(validate_public_url(raw))
                         except CrawlBlocked:
                             continue
                         candidate_domain = domain_of(candidate)
