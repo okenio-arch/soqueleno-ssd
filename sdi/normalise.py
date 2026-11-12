@@ -32,14 +32,14 @@ def normalise_url(value: str | None) -> str | None:
     if any(ord(char) < 32 for char in value) or re.search(r"\s", value):
         return None
 
-    # A scheme is explicit if it follows RFC-style scheme syntax.
-    scheme_match = re.match(r"^([a-z][a-z0-9+.-]*):", value, re.I)
-    if scheme_match:
-        scheme = scheme_match.group(1).casefold()
-        if scheme not in {"http", "https"}:
-            return None
-    elif value.startswith("//"):
+    # Preserve explicit web URLs, reject known non-web link schemes, and
+    # accept bare domains (including an optional port) from spreadsheets.
+    if value.startswith("//"):
         value = "https:" + value
+    elif re.match(r"^https?://", value, re.I):
+        pass
+    elif re.match(r"^(?:mailto|tel|javascript|data|file|ftp|sms):", value, re.I):
+        return None
     else:
         value = "https://" + value
 
