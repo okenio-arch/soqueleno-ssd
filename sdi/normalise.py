@@ -1,11 +1,15 @@
 from __future__ import annotations
+
 import re
 from urllib.parse import urlparse
 
+
 def clean(value):
-    if value is None: return None
+    if value is None:
+        return None
     value = re.sub(r"\s+", " ", str(value)).strip()
     return value or None
+
 
 def normalise_name(value: str) -> str:
     value = clean(value) or ""
@@ -13,14 +17,72 @@ def normalise_name(value: str) -> str:
     value = re.sub(r"[^a-z0-9]+", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
+
 def normalise_url(value: str | None) -> str | None:
+    """Normalise a public website URL without turning contact links into hosts.
+
+    Bare domains are accepted because regulator spreadsheets often omit schemes.
+    Explicit non-web schemes (mailto:, tel:, javascript:, etc.) are rejected.
+    """
     value = clean(value)
-    if not value or value.casefold() in {"n/a", "na", "none", "-", "not available"}: return None
-    if not value.startswith(("http://", "https://")): value = "https://" + value
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname: return None
+    if not value or value.casefold() in {"n/a", "na", "none", "-", "not available"}:
+        return None
+
+    # Reject control characters and whitespace embedded in a URL.
+    if any(ord(char) < 32 for char in value) or re.search(r"\s", value):
+        return None
+
+    # Preserve explicit web URLs, reject known non-web link schemes, and
+    # accept bare domains (including an optional port) from spreadsheets.
+    if value.startswith("//"):
+        value = "https:" + value
+    elif re.match(r"^https?://", value, re.I):
+        pass
+    elif re.match(r"^(?:mailto|tel|javascript|data|file|ftp|sms):", value, re.I):
+        return None
+    else:
+        value = "https://" + value
+
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+        # Accessing .port can raise ValueError for malformed values such as
+        # https://+442039111115 or https://host:abc.
+        port = parsed.port
+    except ValueError:
+        return None
+
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        return None
+    if parsed.username or parsed.password:
+        return None
+    if port not in (None, 80, 443):
+        return None
+
+    # Reject malformed host labels, phone numbers and JavaScript fragments.
+    host = hostname.rstrip(".").casefold()
+    if not host:
+        return None
+    if ":" not in host and not re.fullmatch(
+        r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*",
+        host,
+    ):
+        return None
+    if not re.search(r"[a-z]", host):
+        return None
+
     return value.rstrip("/")
 
+
 def domain_of(url: str | None) -> str | None:
-    if not url: return None
-    return (urlparse(url).hostname or "").lower().removeprefix("www.") or None
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+        # Force validation of malformed ports instead of silently accepting
+        # a hostname from a URL such as https://example.com:abc.
+        _ = parsed.port
+        host = parsed.hostname or ""
+    except ValueError:
+        return None
+    return host.lower().removeprefix("www.") or None
