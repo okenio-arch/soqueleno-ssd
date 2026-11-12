@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import time
-from collections import deque
 from urllib.parse import urljoin, urlparse, urldefrag
 
 import httpx
@@ -108,52 +107,110 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
 
     try:
+        seed_host = (urlparse(seed).hostname or "").lower()
+        seed_domain = domain_of(seed)
+        page_budget = max(1, min(int(max_seed_pages), 30))
+        depth_budget = max(0, min(int(max_seed_depth), 4))
+        with connect(db_path) as conn:
+            conn.execute(
+                """UPDATE discovered_urls SET status='queued',
+                last_error=coalesce(last_error,'Recovered after interrupted seed traversal')
+                WHERE source_id=? AND discovery_type='seed_page' AND status='processing' AND attempts<3""",
+                (source_id,),
+            )
+            pending_count = conn.execute(
+                """SELECT count(*) FROM discovered_urls WHERE source_id=?
+                AND discovery_type='seed_page' AND status IN ('queued','failed') AND attempts<3""",
+                (source_id,),
+            ).fetchone()[0]
+            if pending_count == 0:
+                conn.execute(
+                    """INSERT INTO discovered_urls
+                    (parent_url,discovered_url,domain,discovery_type,status,source_id,depth)
+                    VALUES(?,?,?,'seed_page','queued',?,0)
+                    ON CONFLICT(discovered_url) DO UPDATE SET
+                    parent_url=excluded.parent_url,domain=excluded.domain,
+                    discovery_type='seed_page',status='queued',source_id=excluded.source_id,
+                    depth=0,attempts=0,last_error=NULL""",
+                    (seed, seed, seed_domain, source_id),
+                )
+            seed_pages = conn.execute(
+                """SELECT discovered_url,depth FROM discovered_urls
+                WHERE source_id=? AND discovery_type='seed_page'
+                AND status IN ('queued','failed') AND attempts<3
+                ORDER BY depth,discovered_at LIMIT ?""",
+                (source_id, page_budget),
+            ).fetchall()
+
+        links: dict[str, tuple[str, str]] = {}
         with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
-            seed_host = (urlparse(seed).hostname or "").lower()
-            seed_domain = domain_of(seed)
-            seed_queue = deque([(seed, 0)])
-            seed_seen: set[str] = set()
-            links: dict[str, tuple[str, str]] = {}
-            page_budget = max(1, min(int(max_seed_pages), 30))
-            depth_budget = max(0, min(int(max_seed_depth), 4))
-            while seed_queue and len(seed_seen) < page_budget and len(links) < max_candidates:
-                seed_page, seed_depth = seed_queue.popleft()
-                if seed_page in seed_seen:
-                    continue
-                seed_seen.add(seed_page)
-                if not _robots_allows(client, seed_page, robots_cache):
-                    result["errors"].append({"seed_page": seed_page, "error": "robots.txt não autoriza ou não pôde ser consultado"})
-                    continue
-                response = bounded_get(client, seed_page, max_bytes=2_000_000, allowed_hosts={seed_host})
-                if response.status_code != 200 or "text/html" not in response.headers.get("content-type", "").lower():
-                    result["errors"].append({"seed_page": seed_page, "error": f"Página-semente não HTML ou HTTP {response.status_code}"})
-                    continue
-                _, _, _, soup = _extract_page(response)
-                result["pages_checked"] += 1
-                for anchor in soup.find_all("a", href=True):
-                    raw = canonical_page_url(urldefrag(urljoin(str(response.url), anchor["href"]))[0])
-                    label = clean(anchor.get_text(" ", strip=True)) or ""
-                    try:
-                        candidate_url = canonical_page_url(validate_public_url(raw))
-                    except (CrawlBlocked, ValueError):
-                        continue
-                    domain = domain_of(candidate_url)
-                    if not domain or candidate_url.lower().endswith((".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip")):
-                        continue
-                    if domain == seed_domain:
-                        path_and_label = f"{urlparse(candidate_url).path} {urlparse(candidate_url).query} {label}".casefold()
-                        is_directory_navigation = any(term in path_and_label for term in SEED_NAV_TERMS)
-                        if seed_depth < depth_budget and is_directory_navigation and candidate_url not in seed_seen:
-                            seed_queue.append((candidate_url, seed_depth + 1))
-                        continue
-                    if _is_excluded(domain):
-                        continue
-                    if domain not in links or len(label) > len(links[domain][1]):
-                        links[domain] = (candidate_url, label)
-                    if len(links) >= max_candidates:
-                        break
-                if delay > 0 and seed_queue:
-                    time.sleep(delay)
+            for seed_item in seed_pages:
+                if len(links) >= max_candidates:
+                    break
+                seed_page = seed_item["discovered_url"]
+                seed_depth = int(seed_item["depth"] or 0)
+                with connect(db_path) as conn:
+                    conn.execute(
+                        """UPDATE discovered_urls SET status='processing',attempts=attempts+1,
+                        last_attempt_at=CURRENT_TIMESTAMP,last_error=NULL WHERE discovered_url=? AND source_id=?""",
+                        (seed_page, source_id),
+                    )
+                try:
+                    if not _robots_allows(client, seed_page, robots_cache):
+                        raise CrawlBlocked("robots.txt não autoriza ou não pôde ser consultado")
+                    response = bounded_get(client, seed_page, max_bytes=2_000_000, allowed_hosts={seed_host})
+                    if response.status_code != 200 or "text/html" not in response.headers.get("content-type", "").lower():
+                        raise CrawlBlocked(f"Página-semente não HTML ou HTTP {response.status_code}")
+                    _, _, _, soup = _extract_page(response)
+                    result["pages_checked"] += 1
+                    with connect(db_path) as conn:
+                        conn.execute(
+                            "UPDATE discovered_urls SET status='processed',last_error=NULL WHERE discovered_url=? AND source_id=?",
+                            (seed_page, source_id),
+                        )
+                    for anchor in soup.find_all("a", href=True):
+                        raw = canonical_page_url(urldefrag(urljoin(str(response.url), anchor["href"]))[0])
+                        label = clean(anchor.get_text(" ", strip=True)) or ""
+                        try:
+                            candidate_url = canonical_page_url(validate_public_url(raw))
+                        except (CrawlBlocked, ValueError):
+                            continue
+                        domain = domain_of(candidate_url)
+                        if not domain or candidate_url.lower().endswith((".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip")):
+                            continue
+                        if domain == seed_domain:
+                            path_and_label = f"{urlparse(candidate_url).path} {urlparse(candidate_url).query} {label}".casefold()
+                            is_directory_navigation = any(term in path_and_label for term in SEED_NAV_TERMS)
+                            if seed_depth < depth_budget and is_directory_navigation:
+                                with connect(db_path) as conn:
+                                    conn.execute(
+                                        """INSERT OR IGNORE INTO discovered_urls
+                                        (parent_url,discovered_url,domain,discovery_type,status,anchor_text,source_id,depth)
+                                        VALUES(?,?,?,'seed_page','queued',?,?,?)""",
+                                        (seed_page, candidate_url, domain, label[:300], source_id, seed_depth + 1),
+                                    )
+                            continue
+                        if _is_excluded(domain):
+                            continue
+                        if domain not in links or len(label) > len(links[domain][1]):
+                            links[domain] = (candidate_url, label)
+                        if len(links) >= max_candidates:
+                            break
+                    if delay > 0 and len(seed_pages) > 1:
+                        time.sleep(delay)
+                except (httpx.HTTPError, CrawlBlocked, ValueError) as exc:
+                    result["errors"].append({"seed_page": seed_page, "error": str(exc)[:250]})
+                    with connect(db_path) as conn:
+                        conn.execute(
+                            "UPDATE discovered_urls SET status='failed',last_error=? WHERE discovered_url=? AND source_id=?",
+                            (str(exc)[:250], seed_page, source_id),
+                        )
+        with connect(db_path) as conn:
+            result["seed_pages_remaining"] = conn.execute(
+                """SELECT count(*) FROM discovered_urls WHERE source_id=? AND discovery_type='seed_page'
+                AND status IN ('queued','failed') AND attempts<3""",
+                (source_id,),
+            ).fetchone()[0]
 
             for domain, (candidate_url, anchor_text) in list(links.items()):
                 blocked_reason = _blocked_source_reason(db_path, domain)
