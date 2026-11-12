@@ -1,5 +1,7 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,7 +36,8 @@ class ApiConsoleTests(unittest.TestCase):
                 "main.py", "create-key", "--db", db, "--client", "sdi-console",
                 "--scopes", "organisations:read,discovery:run,sources:manage",
             ]):
-                main.main()
+                with redirect_stdout(io.StringIO()):
+                    main.main()
             initialise(db)
             with connect(db) as conn:
                 row = conn.execute(
