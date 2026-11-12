@@ -183,7 +183,9 @@ def add_source(payload: SourceCreate, authorization: str | None = Header(default
     config = {
         "terms_reviewed": True, "crawl_allowed": True, "reuse_basis": payload.reuse_basis,
         "terms_url": payload.terms_url, "max_candidates_per_run": payload.max_candidates_per_run,
-        "refresh_hours": 168, "license": payload.reuse_basis,\n        "recursive_max_depth": payload.recursive_max_depth,\n        "recursive_max_domains": payload.recursive_max_domains,
+        "refresh_hours": 168, "license": payload.reuse_basis,
+        "recursive_max_depth": payload.recursive_max_depth,
+        "recursive_max_domains": payload.recursive_max_domains,
     }
     with connect(db_path()) as conn:
         conn.execute("""INSERT INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
