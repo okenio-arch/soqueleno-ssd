@@ -219,7 +219,7 @@ def execute_job(job_id: int, db_path: str | None = None) -> None:
 
 def start_scheduler(db_path: str | None = None) -> None:
     global _SCHEDULER_THREAD
-    if setting("SDI_SCHEDULER_ENABLED", "true").casefold() not in {"1", "true", "yes", "on"}:
+    if setting("SDI_SCHEDULER_ENABLED", "false").casefold() not in {"1", "true", "yes", "on"}:
         return
     if _SCHEDULER_THREAD and _SCHEDULER_THREAD.is_alive():
         return
@@ -227,7 +227,7 @@ def start_scheduler(db_path: str | None = None) -> None:
     db_path = db_path or str(ROOT / "data" / "sdi.sqlite3")
 
     def loop():
-        run_on_start = setting("SDI_AUTO_RUN_ON_START", "true").casefold() in {"1", "true", "yes", "on"}
+        run_on_start = setting("SDI_AUTO_RUN_ON_START", "false").casefold() in {"1", "true", "yes", "on"}
         interval_hours = max(1, int(setting("SDI_SCHEDULE_HOURS", "24")))
         first = True
         while not _SCHEDULER_STOP.is_set():
