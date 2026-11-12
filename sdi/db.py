@@ -224,6 +224,22 @@ def initialise(path: str = "data/sdi.sqlite3") -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_org_website_attempt ON organisations(website_last_attempt_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovered_urls_status ON discovered_urls(status,discovered_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovered_urls_source_queue ON discovered_urls(source_id,status,depth,attempts)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS page_versions (
+            version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            page_id INTEGER NOT NULL REFERENCES crawled_pages(page_id) ON DELETE CASCADE,
+            organisation_id INTEGER REFERENCES organisations(organisation_id) ON DELETE SET NULL,
+            source_id TEXT NOT NULL,
+            url TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            title TEXT,
+            description TEXT,
+            text_content TEXT,
+            change_type TEXT NOT NULL DEFAULT 'new',
+            captured_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(page_id,content_hash)
+        )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_page_versions_page_time ON page_versions(page_id,captured_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_page_versions_org_time ON page_versions(organisation_id,captured_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_field ON evidence(organisation_id,field_name,collected_at)")
         conn.execute("""UPDATE evidence SET confidence=CASE evidence_status WHEN 'official_snapshot' THEN 0.90 WHEN 'official_register' THEN 0.95 WHEN 'website_observation' THEN 0.60 WHEN 'discovery_observation' THEN 0.55 ELSE 0.50 END WHERE confidence=0.5""")
         # One-time initial build of the expanded search index for databases upgraded from 0.7.
