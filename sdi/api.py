@@ -19,7 +19,7 @@ from .search import search_organisations, search_everything
 from .engine import create_job, execute_job, start_scheduler, stop_scheduler
 from .crawler import validate_public_url, CrawlBlocked
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 WEB_DIR = Path(__file__).resolve().parent / "web"
 app = FastAPI(title="Soqueleno Discovery Infrastructure", version=VERSION,
               description="Internal, focused web index for UK immigration legal-service organisations.")
@@ -98,10 +98,18 @@ def console_summary(authorization: str | None = Header(default=None)):
         evidence = conn.execute("SELECT count(*) FROM evidence").fetchone()[0]
         sources = conn.execute("SELECT count(*) FROM sources WHERE status='enabled'").fetchone()[0]
         candidates = conn.execute("SELECT count(*) FROM discovered_urls WHERE status='candidate_only'").fetchone()[0]
+        queue_rows = conn.execute("SELECT status,count(*) AS total FROM discovered_urls WHERE discovery_type='recursive_seed' GROUP BY status").fetchall()
+        queue = {row["status"]: row["total"] for row in queue_rows}
+        duplicates = conn.execute("SELECT count(*) FROM crawled_pages WHERE duplicate_of_url IS NOT NULL").fetchone()[0]
+        evidence_rows = conn.execute("SELECT evidence_status,count(*) AS total FROM evidence GROUP BY evidence_status").fetchall()
+        evidence_by_status = {row["evidence_status"]: row["total"] for row in evidence_rows}
+        active_seeds = conn.execute("SELECT count(*) FROM sources WHERE status='enabled' AND source_type='html_directory_seed'").fetchone()[0]
         latest_run = conn.execute("SELECT run_id,started_at,finished_at,status,pages_checked,organisations_created,organisations_updated,datasets_imported,error FROM discovery_runs ORDER BY run_id DESC LIMIT 1").fetchone()
         latest_job = conn.execute("SELECT job_id,status,created_at,started_at,finished_at,error FROM discovery_jobs ORDER BY job_id DESC LIMIT 1").fetchone()
     return {"organisations": organisations, "indexed_pages": pages, "evidence": evidence,
             "enabled_sources": sources, "external_candidates": candidates,
+            "recursive_queue": queue, "duplicate_pages": duplicates,
+            "evidence_by_status": evidence_by_status, "active_html_seeds": active_seeds,
             "latest_run": dict(latest_run) if latest_run else None,
             "latest_job": dict(latest_job) if latest_job else None}
 
@@ -190,9 +198,20 @@ def update_source_status(source_id: str, payload: SourceStatus, authorization: s
     if payload.status not in {"enabled", "disabled", "blocked_pending_authorisation"}:
         raise HTTPException(status_code=400, detail="Estado inválido")
     with connect(db_path()) as conn:
-        cur = conn.execute("UPDATE sources SET status=?,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (payload.status, source_id))
-        if cur.rowcount == 0:
+        source = conn.execute("SELECT source_type,config_json FROM sources WHERE source_id=?", (source_id,)).fetchone()
+        if not source:
             raise HTTPException(status_code=404, detail="Fonte não encontrada")
+        if payload.status == "enabled":
+            if source["source_type"] not in {"govuk_xlsx", "html_directory_seed"}:
+                raise HTTPException(status_code=400, detail="Esta fonte não tem um adaptador ativo. Não pode ser ativada.")
+            if source["source_type"] == "html_directory_seed":
+                try:
+                    config = json.loads(source["config_json"] or "{}")
+                except ValueError:
+                    config = {}
+                if not (config.get("terms_reviewed") and config.get("crawl_allowed") and config.get("reuse_basis")):
+                    raise HTTPException(status_code=400, detail="A fonte precisa de revisão de termos e base de reutilização antes de ser ativada.")
+        conn.execute("UPDATE sources SET status=?,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (payload.status, source_id))
     return {"source_id": source_id, "status": payload.status}
 
 
