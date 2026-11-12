@@ -214,7 +214,6 @@ def initialise(path: str = "data/sdi.sqlite3") -> None:
             "evidence": {"confidence": "REAL NOT NULL DEFAULT 0.5", "source_authority": "TEXT"},
             "discovered_urls": {"anchor_text": "TEXT", "source_id": "TEXT", "depth": "INTEGER NOT NULL DEFAULT 0", "attempts": "INTEGER NOT NULL DEFAULT 0", "last_attempt_at": "TEXT", "last_error": "TEXT"},
             "discovery_runs": {"source_id": "TEXT", "run_type": "TEXT NOT NULL DEFAULT 'source_discovery'", "datasets_imported": "INTEGER NOT NULL DEFAULT 0"},
-            "discovered_urls": {"anchor_text": "TEXT"},
         }
         for table, additions in migrations.items():
             columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
