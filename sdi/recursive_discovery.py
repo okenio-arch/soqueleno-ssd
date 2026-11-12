@@ -152,10 +152,11 @@ def discover_recursive_from_seed(
                     )
         else:
             if parent_url:
+                final_status = "failed" if int(result.get("pages_checked", 0)) == 0 else "processed"
                 with connect(db_path) as conn:
                     conn.execute(
-                        "UPDATE discovered_urls SET status='processed' WHERE discovered_url=?",
-                        (current_url,),
+                        "UPDATE discovered_urls SET status=? WHERE discovered_url=?",
+                        (final_status, current_url),
                     )
 
     report["domains_processed"] = len(processed_domains)
