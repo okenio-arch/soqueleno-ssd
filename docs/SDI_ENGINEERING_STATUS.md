@@ -33,7 +33,7 @@ Confidence values are engineering weights, not calibrated probabilities. Current
 ## Crawler controls
 
 - HTTP(S) only; credentials and non-standard ports rejected.
-- DNS answers must be public; the connected peer IP must match the validated public DNS answer.
+- DNS answers must be public; the socket connects directly to one validated IP, while the original Host header and TLS SNI/certificate hostname are preserved. The connected peer is checked against the pinned IP.
 - Ambient proxy configuration is disabled for crawler clients.
 - Response bodies are streamed and capped: 512 KB for robots.txt, 2 MB for HTML/sitemaps, and 35 MB for official XLSX downloads.
 - Redirects are explicit, bounded and checked against source host allowlists where applicable.
