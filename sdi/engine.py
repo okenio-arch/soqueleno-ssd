@@ -51,7 +51,9 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
         "sources_considered": 0, "sources_run": 0, "datasets_imported": 0,
         "records_seen": 0, "records_accepted": 0, "organisations_created": 0,
         "organisations_updated": 0, "websites_crawled": 0, "pages_indexed": 0,
-        "external_candidates_recorded": 0, "results": [], "errors": [],
+        "external_candidates_recorded": 0, "seed_pages_checked": 0,
+        "recursive_domains_processed": 0, "seed_candidates_found": 0,
+        "results": [], "errors": [],
     }
     run_id = None
     try:
@@ -112,7 +114,9 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     with connect(db_path) as conn:
                         conn.execute("UPDATE sources SET last_success_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (sid,))
                     report["sources_run"] += 1
-                    report["pages_indexed"] += int(result.get("pages_checked", 0))
+                    report["seed_pages_checked"] += int(result.get("pages_checked", 0))
+                    report["recursive_domains_processed"] += int(result.get("domains_processed", 0))
+                    report["seed_candidates_found"] += int(result.get("candidates_found", 0))
                     report["external_candidates_recorded"] += int(result.get("candidates_found", 0))
                     report["organisations_created"] += int(result.get("organisations_created", 0))
                     report["organisations_updated"] += int(result.get("organisations_updated", 0))
