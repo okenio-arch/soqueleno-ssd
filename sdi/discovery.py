@@ -56,6 +56,22 @@ def _extract_page(response: httpx.Response) -> tuple[str, str, str, BeautifulSou
     return title[:500], description[:1200], text, soup
 
 
+
+def _blocked_source_reason(db_path: str, domain: str) -> str | None:
+    """Do not fetch domains explicitly blocked or disabled in the source registry."""
+    if not domain:
+        return "Domínio inválido"
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name,url,status,source_type FROM sources WHERE status IN ('blocked_pending_authorisation','disabled','review_required')"
+        ).fetchall()
+    for row in rows:
+        source_domain = domain_of(row["url"])
+        if source_domain and (domain == source_domain or domain.endswith("." + source_domain)):
+            return f"Domínio bloqueado pela política da fonte: {row['name']} ({row['status']})"
+    return None
+
+
 def _is_excluded(domain: str) -> bool:
     return any(domain == item or domain.endswith("." + item) for item in EXCLUDED_DOMAINS)
 
@@ -111,6 +127,26 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                     break
 
             for domain, (candidate_url, anchor_text) in list(links.items()):
+                blocked_reason = _blocked_source_reason(db_path, domain)
+                if blocked_reason:
+                    with connect(db_path) as conn:
+                        conn.execute(
+                            """INSERT INTO organisation_candidates
+                            (run_id,seed_url,candidate_url,domain,anchor_text,relevance_score,decision,decision_reason)
+                            VALUES(?,?,?,?,?,0,'rejected_source_policy',?)
+                            ON CONFLICT(run_id,domain) DO UPDATE SET
+                            decision='rejected_source_policy',decision_reason=excluded.decision_reason,
+                            checked_at=CURRENT_TIMESTAMP""",
+                            (run_id, seed, candidate_url, domain, anchor_text, blocked_reason),
+                        )
+                    result["candidates_found"] += 1
+                    result["candidates_rejected"] += 1
+                    result["candidates"].append({
+                        "domain": domain, "score": 0.0,
+                        "decision": "rejected_source_policy",
+                        "reason": blocked_reason,
+                    })
+                    continue
                 try:
                     if not _robots_allows(client, candidate_url, robots_cache):
                         result["errors"].append({"domain": domain, "error": "robots.txt não autoriza"})
