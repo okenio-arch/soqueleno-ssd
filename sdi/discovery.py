@@ -7,7 +7,7 @@ from urllib.parse import urljoin, urlparse, urldefrag
 import httpx
 from bs4 import BeautifulSoup
 
-from .crawler import CrawlBlocked, USER_AGENT, ROBOT_TOKEN, _robots_allows, validate_public_url
+from .crawler import CrawlBlocked, USER_AGENT, ROBOT_TOKEN, _robots_allows, validate_public_url, bounded_get
 from .db import connect
 from .normalise import clean, domain_of, normalise_name
 
@@ -84,7 +84,7 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
         with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
             if not _robots_allows(client, seed, robots_cache):
                 raise CrawlBlocked("robots.txt não autoriza a consulta da fonte inicial")
-            response = client.get(seed)
+            response = bounded_get(client, seed, max_bytes=2_000_000, allowed_hosts={(urlparse(seed).hostname or "").lower()})
             if response.status_code != 200:
                 raise CrawlBlocked(f"Fonte inicial respondeu HTTP {response.status_code}; redirects não são seguidos automaticamente")
             if "text/html" not in response.headers.get("content-type", "").lower():
@@ -115,7 +115,7 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                     if not _robots_allows(client, candidate_url, robots_cache):
                         result["errors"].append({"domain": domain, "error": "robots.txt não autoriza"})
                         continue
-                    page = client.get(candidate_url)
+                    page = bounded_get(client, candidate_url, max_bytes=2_000_000, allowed_hosts={(urlparse(candidate_url).hostname or "").lower()})
                     if page.status_code != 200 or "text/html" not in page.headers.get("content-type", "").lower():
                         result["errors"].append({"domain": domain, "error": f"homepage indisponível: HTTP {page.status_code}"})
                         continue
@@ -144,8 +144,13 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                                 result["organisations_created"] += 1
                             for field, value in (("website_title", title), ("website_description", description), ("immigration_service_signals", ", ".join(terms))):
                                 if value:
-                                    conn.execute("INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'discovery_observation')",
-                                                 (oid, source_id, str(page.url), field, value))
+                                    conn.execute(
+                                    """INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                                    VALUES(?,?,?,?,?,'discovery_observation',0.55,?)
+                                    ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET
+                                    collected_at=CURRENT_TIMESTAMP,confidence=0.55,evidence_status='discovery_observation'""",
+                                    (oid, source_id, str(page.url), field, value, source_id),
+                                )
                     with connect(db_path) as conn:
                         conn.execute(
                             """INSERT INTO organisation_candidates(run_id,seed_url,candidate_url,domain,anchor_text,page_title,description,relevance_score,decision,decision_reason,organisation_id)
