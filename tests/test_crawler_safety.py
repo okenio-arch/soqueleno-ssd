@@ -56,6 +56,25 @@ class BoundedGetTests(unittest.TestCase):
                 bounded_get(client, "https://example.org", allowed_hosts={"example.org"})
         self.assertEqual(len(requests), 1)
 
+    def test_connection_uses_pinned_ip_and_original_host_identity(self):
+        observed = {}
+
+        def handler(request):
+            observed["url_host"] = request.url.host
+            observed["host_header"] = request.headers.get("host")
+            observed["sni"] = request.extensions.get("sni_hostname")
+            return httpx.Response(
+                200, content=b"ok", request=request,
+                extensions={"network_stream": _Peer(str(self.public_ip))},
+            )
+
+        with self._patch_dns(), self._client(handler) as client:
+            response = bounded_get(client, "https://example.org/path")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(observed["url_host"], str(self.public_ip))
+        self.assertEqual(observed["host_header"], "example.org")
+        self.assertEqual(observed["sni"], "example.org")
+
     def test_dns_peer_must_match_validated_address(self):
         def handler(request):
             return httpx.Response(
