@@ -186,7 +186,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "0.8")),
                 )
                 report["websites_crawled"] += 1
-                report["pages_indexed"] += int(result.get("pages_crawled", 0))
+                report["pages_indexed"] += int(result.get("pages_indexed", 0))
                 report["external_candidates_recorded"] += int(result.get("external_candidates_recorded", 0))
                 if result.get("errors"):
                     report["errors"].extend({"organisation_id": target["organisation_id"], **x} for x in result["errors"][:5])
