@@ -44,6 +44,8 @@ def discover_recursive_from_seed(
         "domains_processed": 0,
         "pages_checked": 0,
         "candidates_found": 0,
+        "candidates_accepted": 0,
+        "candidates_rejected": 0,
         "organisations_created": 0,
         "organisations_updated": 0,
         "queue_remaining": 0,
@@ -77,6 +79,8 @@ def discover_recursive_from_seed(
             )
             report["pages_checked"] += int(result.get("pages_checked", 0))
             report["candidates_found"] += int(result.get("candidates_found", 0))
+            report["candidates_accepted"] += int(result.get("candidates_accepted", 0))
+            report["candidates_rejected"] += int(result.get("candidates_rejected", 0))
             report["organisations_created"] += int(result.get("organisations_created", 0))
             report["organisations_updated"] += int(result.get("organisations_updated", 0))
             report["results"].append({
@@ -85,6 +89,8 @@ def discover_recursive_from_seed(
                 "run_id": result.get("run_id"),
                 "pages_checked": result.get("pages_checked", 0),
                 "candidates_found": result.get("candidates_found", 0),
+                "candidates_accepted": result.get("candidates_accepted", 0),
+                "candidates_rejected": result.get("candidates_rejected", 0),
                 "errors": result.get("errors", []),
             })
             report["errors"].extend(

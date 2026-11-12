@@ -169,7 +169,7 @@ def _ensure_website_source(db_path: str) -> None:
         conn.execute(
             """INSERT OR IGNORE INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
             VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (SOURCE_ID, "Imported organisation websites", "https://example.invalid", "organisation_websites", 20,
+            (SOURCE_ID, "Imported organisation websites", "sdi://organisation-websites", "organisation_websites", 20,
              "robots_checked_http", "enabled", "Limited crawl of websites listed by official datasets or approved sources; same-site pages only.",
              "website_crawl", "{}"),
         )

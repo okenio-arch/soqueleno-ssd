@@ -75,7 +75,7 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
             (seed, source_id),
         ).lastrowid
 
-    result = {"run_id": run_id, "seed_url": seed, "pages_checked": 0, "candidates_found": 0,
+    result = {"run_id": run_id, "seed_url": seed, "pages_checked": 0, "candidates_found": 0, "candidates_accepted": 0, "candidates_rejected": 0,
               "organisations_created": 0, "organisations_updated": 0, "candidates": [], "errors": []}
     robots_cache: dict[str, bool] = {}
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
@@ -156,6 +156,10 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
                         )
                     result["candidates"].append({"domain": domain, "name": name, "score": score, "decision": decision, "organisation_id": oid, "signals": terms})
                     result["candidates_found"] += 1
+                    if accepted:
+                        result["candidates_accepted"] += 1
+                    else:
+                        result["candidates_rejected"] += 1
                     if delay > 0:
                         time.sleep(delay)
                 except (httpx.HTTPError, CrawlBlocked, ValueError) as exc:
