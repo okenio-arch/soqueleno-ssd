@@ -433,5 +433,6 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
         conn.execute("UPDATE organisations SET website_crawl_status=?,website_last_crawled_at=CASE WHEN ? > 0 THEN CURRENT_TIMESTAMP ELSE website_last_crawled_at END WHERE organisation_id=?",
                      (final_status, pages, organisation_id))
     return {"organisation_id": organisation_id, "start_url": start, "pages_crawled": pages,
-            "unique_urls_seen": len(seen), "pages_indexed": indexed_pages,\n            "pages_excluded": excluded_pages, "external_candidates_recorded": external_candidates,
+            "unique_urls_seen": len(seen), "pages_indexed": indexed_pages,
+            "pages_excluded": excluded_pages, "external_candidates_recorded": external_candidates,
             "crawl_status": final_status, "errors": errors}
