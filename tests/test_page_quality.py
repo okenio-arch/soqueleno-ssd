@@ -49,6 +49,8 @@ class PageQualityTests(unittest.TestCase):
                 versions = conn.execute("SELECT change_type,content_hash FROM page_versions ORDER BY version_id").fetchall()
             self.assertEqual(first["pages_crawled"], 1)
             self.assertEqual(second["pages_crawled"], 1)
+            self.assertEqual(first["pages_indexed"], 1)
+            self.assertEqual(second["pages_indexed"], 1)
             self.assertEqual(len(versions), 2)
             self.assertEqual([row["change_type"] for row in versions], ["new", "changed"])
 
