@@ -52,7 +52,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
         "records_seen": 0, "records_accepted": 0, "organisations_created": 0,
         "organisations_updated": 0, "websites_crawled": 0, "pages_indexed": 0,
         "external_candidates_recorded": 0, "seed_pages_checked": 0,
-        "recursive_domains_processed": 0, "seed_candidates_found": 0,
+        "recursive_domains_processed": 0, "seed_candidates_found": 0, "seed_candidates_accepted": 0, "seed_candidates_rejected": 0,
         "results": [], "errors": [],
     }
     run_id = None
@@ -123,8 +123,11 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     report["seed_pages_checked"] += int(result.get("pages_checked", 0))
                     report["recursive_domains_processed"] += int(result.get("domains_processed", 0))
                     report["seed_candidates_found"] += int(result.get("candidates_found", 0))
+                    report["seed_candidates_accepted"] += int(result.get("candidates_accepted", 0))
+                    report["seed_candidates_rejected"] += int(result.get("candidates_rejected", 0))
                     report["organisations_created"] += int(result.get("organisations_created", 0))
                     report["organisations_updated"] += int(result.get("organisations_updated", 0))
+                    report["errors"].extend({"source_id": sid, **item} for item in source_errors[:20])
                     report["results"].append({"source_id": sid, "name": source["name"], **result})
                 else:
                     report["results"].append({"source_id": sid, "name": source["name"], "status": "skipped", "reason": "Adaptador ainda não implementado"})
