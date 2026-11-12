@@ -16,7 +16,7 @@ from .db import initialise, connect
 from .registry import load_sources
 from .profiles import get_profile
 from .search import search_organisations, search_everything
-from .engine import create_job, execute_job, start_scheduler, stop_scheduler
+from .engine import create_job, execute_job, start_scheduler, stop_scheduler, recover_interrupted_work
 from .crawler import validate_public_url, CrawlBlocked
 
 VERSION = "0.9.0"
@@ -64,6 +64,7 @@ def authenticate(authorization: str | None, required_scope: str = "organisations
 @app.on_event("startup")
 def startup():
     initialise(db_path())
+    recover_interrupted_work(db_path())
     load_sources(str(ROOT / "config" / "sources.json"), db_path())
     start_scheduler(db_path())
 
