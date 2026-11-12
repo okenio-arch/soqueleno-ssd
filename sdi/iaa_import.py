@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from pathlib import Path
+
 from .db import connect
 from .normalise import clean, normalise_name, normalise_url, domain_of
 
@@ -7,98 +9,283 @@ IAA_SOURCE_ID = "iaa_foi_register"
 IAA_SOURCE_URL = "https://www.gov.uk/government/publications/register-of-currently-registered-immigration-advice-organisations"
 DATASET_AS_OF = "2026-07-09"
 PUBLISHED_AT = "2026-09-25"
+
+# Header names used by the official IAA XLSX, plus older variants.
 ALIASES = {
- "name": {"organisation name","organisation","name","registered organisation name","business name"},
- "reference": {"registration number","registration no","registration reference","organisation registration number","iaa number","oisc number","reference number"},
- "level": {"registration level","level","authorisation level"},
- "status": {"authorisation status","authorisation","status","registration status"},
- "website": {"website","web site","website address"},
- "address": {"address","registered address","business address"},
- "phone": {"telephone","telephone number","phone","telephone no"},
- "email": {"email","email address","public email"},
+    "name": {
+        "organisation name", "organisation", "name",
+        "registered organisation name", "business name",
+    },
+    "reference": {
+        "registration number", "registration no", "registration reference",
+        "organisation registration number", "organisation number",
+        "iaa number", "oisc number", "reference number",
+    },
+    "level": {
+        "registration level", "regulated level", "level",
+        "authorisation level",
+    },
+    "approval_date": {
+        "earliest approval date", "approval date", "date of approval",
+    },
+    "status": {
+        "authorisation status", "authorisation", "status",
+        "registration status",
+    },
+    "website": {
+        "website", "web site", "website address", "organisation website",
+    },
+    "address": {"address", "registered address", "business address"},
+    "phone": {"telephone", "telephone number", "phone", "telephone no"},
+    "email": {"email", "email address", "public email"},
 }
 
-def _key(v): return " ".join(str(v or "").strip().casefold().replace("_"," ").split())
+
+def _key(value):
+    return " ".join(str(value or "").strip().casefold().replace("_", " ").split())
+
+
 def _detect(headers):
     result = {}
-    for idx, header in enumerate(headers):
+    for index, header in enumerate(headers):
         key = _key(header)
         for field, aliases in ALIASES.items():
-            if key in aliases and field not in result: result[field] = idx
+            if key in aliases and field not in result:
+                result[field] = index
     return result
+
 
 def inspect_workbook(path: str) -> dict:
     from openpyxl import load_workbook
-    wb = load_workbook(path, read_only=True, data_only=True)
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
     result = {"file": Path(path).name, "sheets": []}
-    for ws in wb.worksheets:
-        rows = list(ws.iter_rows(min_row=1, max_row=15, values_only=True))
-        result["sheets"].append({"name": ws.title, "sample_rows": len(rows), "candidate_headers": [list(r) for r in rows if any(v is not None for v in r)][:5]})
-    wb.close()
+    try:
+        for worksheet in workbook.worksheets:
+            rows = list(worksheet.iter_rows(min_row=1, max_row=15, values_only=True))
+            result["sheets"].append({
+                "name": worksheet.title,
+                "sample_rows": len(rows),
+                "candidate_headers": [
+                    list(row) for row in rows if any(value is not None for value in row)
+                ][:5],
+            })
+    finally:
+        workbook.close()
     return result
 
-def import_iaa_xlsx(xlsx_path: str, db_path: str, dry_run: bool = False, *, dataset_as_of: str | None = None, published_at: str | None = None) -> dict:
+
+def import_iaa_xlsx(
+    xlsx_path: str,
+    db_path: str,
+    dry_run: bool = False,
+    *,
+    dataset_as_of: str | None = None,
+    published_at: str | None = None,
+) -> dict:
     from openpyxl import load_workbook
+
     dataset_as_of = dataset_as_of or DATASET_AS_OF
     published_at = published_at or PUBLISHED_AT
     path = Path(xlsx_path)
-    if not path.is_file(): raise FileNotFoundError(path)
-    wb = load_workbook(path, read_only=True, data_only=True)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
     found = None
-    for ws in wb.worksheets:
-        for row_num, row in enumerate(ws.iter_rows(min_row=1, max_row=20, values_only=True), 1):
-            headers = [clean(v) or "" for v in row]
-            cols = _detect(headers)
-            if "name" in cols and "reference" in cols:
-                found = (ws, row_num, cols); break
-        if found: break
-    if not found:
-        wb.close(); raise ValueError("Não foram reconhecidos cabeçalhos para nome e referência IAA. Inspecione o XLSX e ajuste aliases antes de importar.")
-    ws, header_row, cols = found
-    records=[]; seen=0; skipped=0
-    for row in ws.iter_rows(min_row=header_row+1, values_only=True):
-        seen += 1
-        rec={k: clean(row[i] if i < len(row) else None) for k,i in cols.items()}
-        if not rec.get("name") or not rec.get("reference"):
-            skipped += 1; continue
-        rec["website"] = normalise_url(rec.get("website"))
-        records.append(rec)
-    wb.close()
-    result={"rows_seen":seen,"rows_valid":len(records),"rows_skipped":skipped,"sheet":ws.title,"header_row":header_row,"dry_run":dry_run,"created":0,"updated":0}
-    if dry_run: return result
+    try:
+        for worksheet in workbook.worksheets:
+            for row_number, row in enumerate(
+                worksheet.iter_rows(min_row=1, max_row=20, values_only=True), 1
+            ):
+                columns = _detect([clean(value) or "" for value in row])
+                if "name" in columns and "reference" in columns:
+                    found = (worksheet, row_number, columns)
+                    break
+            if found:
+                break
+
+        if not found:
+            raise ValueError(
+                "Não foram reconhecidos os cabeçalhos de nome e número de organização "
+                "no XLSX do IAA."
+            )
+
+        worksheet, header_row, columns = found
+        records = []
+        seen = 0
+        skipped = 0
+        for row in worksheet.iter_rows(min_row=header_row + 1, values_only=True):
+            seen += 1
+            record = {
+                field: clean(row[index] if index < len(row) else None)
+                for field, index in columns.items()
+            }
+            if not record.get("name") or not record.get("reference"):
+                skipped += 1
+                continue
+            record["website"] = normalise_url(record.get("website"))
+            records.append(record)
+
+        sheet_name = worksheet.title
+    finally:
+        workbook.close()
+
+    result = {
+        "rows_seen": seen,
+        "rows_valid": len(records),
+        "rows_skipped": skipped,
+        "sheet": sheet_name,
+        "header_row": header_row,
+        "dry_run": dry_run,
+        "created": 0,
+        "updated": 0,
+    }
+    if dry_run:
+        return result
+
     with connect(db_path) as conn:
-        if not conn.execute("SELECT 1 FROM sources WHERE source_id=?",(IAA_SOURCE_ID,)).fetchone():
+        source = conn.execute(
+            "SELECT 1 FROM sources WHERE source_id = ?", (IAA_SOURCE_ID,)
+        ).fetchone()
+        if not source:
             raise RuntimeError("Fonte IAA não registada. Execute load-sources.")
-        batch=conn.execute("INSERT INTO import_batches(source_id,filename,dataset_as_of,rows_seen,status) VALUES(?,?,?,?,?)",(IAA_SOURCE_ID,path.name,dataset_as_of,seen,"running")).lastrowid
-        for r in records:
-            existing=conn.execute("SELECT organisation_id FROM organisations WHERE regulator='IAA' AND regulator_reference=?",(r["reference"],)).fetchone()
-            domain=domain_of(r.get("website")); norm=normalise_name(r["name"])
-            # Resolve an IAA entry to an organisation previously imported from LAA
-            # before inserting a second profile for the same firm.
+
+        batch_id = conn.execute(
+            """INSERT INTO import_batches
+               (source_id, filename, dataset_as_of, rows_seen, status)
+               VALUES (?, ?, ?, ?, 'running')""",
+            (IAA_SOURCE_ID, path.name, dataset_as_of, seen),
+        ).lastrowid
+
+        for record in records:
+            reference = record["reference"]
+            name = record["name"]
+            domain = domain_of(record.get("website"))
+            normalized_name = normalise_name(name)
+
+            existing = conn.execute(
+                """SELECT organisation_id FROM organisations
+                   WHERE regulator = 'IAA' AND regulator_reference = ?""",
+                (reference,),
+            ).fetchone()
+
+            # Reuse an existing LAA profile when the website domain matches.
             if not existing and domain:
-                existing=conn.execute("SELECT organisation_id FROM organisations WHERE domain=? LIMIT 1",(domain,)).fetchone()
-            if not existing and r.get("address"):
-                existing=conn.execute("SELECT organisation_id FROM organisations WHERE normalized_name=? AND coalesce(address,'')=? LIMIT 1",(norm,r["address"])).fetchone()
+                existing = conn.execute(
+                    """SELECT organisation_id FROM organisations
+                       WHERE domain = ? LIMIT 1""",
+                    (domain,),
+                ).fetchone()
+
+            if not existing and record.get("address"):
+                existing = conn.execute(
+                    """SELECT organisation_id FROM organisations
+                       WHERE normalized_name = ? AND coalesce(address, '') = ?
+                       LIMIT 1""",
+                    (normalized_name, record["address"]),
+                ).fetchone()
+
             if existing:
-                oid=existing[0]
-                conn.execute("""UPDATE organisations SET canonical_name=?,normalized_name=?,website=COALESCE(?,website),domain=COALESCE(?,domain),
-                organisation_type=COALESCE(?,organisation_type),address=COALESCE(?,address),phone=COALESCE(?,phone),public_email=COALESCE(?,public_email),
-                regulator=CASE WHEN regulator IS NULL OR regulator='IAA' THEN 'IAA' ELSE regulator END,
-                regulator_reference=CASE WHEN regulator IS NULL OR regulator='IAA' THEN ? ELSE regulator_reference END,
-                regulator_status=CASE WHEN regulator IS NULL OR regulator='IAA' THEN COALESCE(?,regulator_status) ELSE regulator_status END,
-                confidence=max(confidence,0.75),last_seen_at=CURRENT_TIMESTAMP WHERE organisation_id=?""",
-                (r["name"],norm,r.get("website"),domain,r.get("level"),r.get("address"),r.get("phone"),r.get("email"),r["reference"],r.get("status"),oid))
-                result["updated"]+=1
+                organisation_id = existing[0]
+                conn.execute(
+                    """UPDATE organisations
+                       SET canonical_name = ?,
+                           normalized_name = ?,
+                           website = COALESCE(?, website),
+                           domain = COALESCE(?, domain),
+                           address = COALESCE(?, address),
+                           phone = COALESCE(?, phone),
+                           public_email = COALESCE(?, public_email),
+                           regulator = CASE
+                               WHEN regulator IS NULL OR regulator = 'IAA' THEN 'IAA'
+                               ELSE regulator END,
+                           regulator_reference = CASE
+                               WHEN regulator IS NULL OR regulator = 'IAA' THEN ?
+                               ELSE regulator_reference END,
+                           confidence = max(confidence, 0.75),
+                           last_seen_at = CURRENT_TIMESTAMP
+                       WHERE organisation_id = ?""",
+                    (
+                        name,
+                        normalized_name,
+                        record.get("website"),
+                        domain,
+                        record.get("address"),
+                        record.get("phone"),
+                        record.get("email"),
+                        reference,
+                        organisation_id,
+                    ),
+                )
+                result["updated"] += 1
             else:
-                cur=conn.execute("""INSERT INTO organisations(canonical_name,normalized_name,website,domain,organisation_type,address,phone,public_email,regulator,regulator_reference,regulator_status,confidence)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",(r["name"],norm,r.get("website"),domain,r.get("level"),r.get("address"),r.get("phone"),r.get("email"),"IAA",r["reference"],r.get("status"),0.75))
-                oid=cur.lastrowid; result["created"]+=1
-            conn.execute("INSERT INTO organisation_identifiers(organisation_id,source_id,namespace,identifier,source_url) VALUES(?,?,?,?,?) ON CONFLICT(source_id,namespace,identifier) DO UPDATE SET organisation_id=excluded.organisation_id,source_url=excluded.source_url",
-                         (oid,IAA_SOURCE_ID,"iaa_registration",r["reference"],IAA_SOURCE_URL))
-            fields={"canonical_name":r["name"],"regulator_reference":r["reference"],"registration_level":r.get("level"),"regulator_status":r.get("status"),"website":r.get("website"),"address":r.get("address"),"phone":r.get("phone"),"public_email":r.get("email")}
-            for field,value in fields.items():
+                cursor = conn.execute(
+                    """INSERT INTO organisations
+                       (canonical_name, normalized_name, website, domain,
+                        address, phone, public_email, regulator,
+                        regulator_reference, confidence)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'IAA', ?, 0.75)""",
+                    (
+                        name,
+                        normalized_name,
+                        record.get("website"),
+                        domain,
+                        record.get("address"),
+                        record.get("phone"),
+                        record.get("email"),
+                        reference,
+                    ),
+                )
+                organisation_id = cursor.lastrowid
+                result["created"] += 1
+
+            # The unique key makes repeated imports idempotent.
+            conn.execute(
+                """INSERT OR IGNORE INTO organisation_identifiers
+                   (organisation_id, source_id, namespace, identifier, source_url)
+                   VALUES (?, ?, 'iaa_registration', ?, ?)""",
+                (organisation_id, IAA_SOURCE_ID, reference, IAA_SOURCE_URL),
+            )
+
+            evidence_fields = {
+                "canonical_name": name,
+                "regulator_reference": reference,
+                "registration_level": record.get("level"),
+                "earliest_approval_date": record.get("approval_date"),
+                "website": record.get("website"),
+                "address": record.get("address"),
+                "phone": record.get("phone"),
+                "public_email": record.get("email"),
+            }
+            for field, value in evidence_fields.items():
                 if value:
-                    conn.execute("INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,source_published_at,dataset_as_of,evidence_status) VALUES(?,?,?,?,?,?,?,?)",(oid,IAA_SOURCE_ID,IAA_SOURCE_URL,field,value,published_at,dataset_as_of,"official_snapshot"))
-        conn.execute("UPDATE import_batches SET organisations_created=?,organisations_updated=?,rows_skipped=?,status='completed' WHERE batch_id=?",(result["created"],result["updated"],skipped,batch))
-    result["batch_id"]=batch
+                    conn.execute(
+                        """INSERT OR IGNORE INTO evidence
+                           (organisation_id, source_id, source_url, field_name,
+                            field_value, source_published_at, dataset_as_of,
+                            evidence_status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 'official_snapshot')""",
+                        (
+                            organisation_id,
+                            IAA_SOURCE_ID,
+                            IAA_SOURCE_URL,
+                            field,
+                            str(value),
+                            published_at,
+                            dataset_as_of,
+                        ),
+                    )
+
+        conn.execute(
+            """UPDATE import_batches
+               SET organisations_created = ?,
+                   organisations_updated = ?,
+                   rows_skipped = ?,
+                   status = 'completed'
+               WHERE batch_id = ?""",
+            (result["created"], result["updated"], skipped, batch_id),
+        )
+
+    result["batch_id"] = batch_id
     return result
