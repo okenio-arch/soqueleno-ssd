@@ -33,7 +33,7 @@ class ApprovedSeedTraversalTests(unittest.TestCase):
                  patch("sdi.recursive_discovery.discover_from_seed", side_effect=fake_discovery):
                 result = discover_recursive_from_seed(
                     "https://seed.example", db, source_id="seed",
-                    max_depth=2, max_domains=8, delay=0,
+                    max_seed_depth=2, max_seed_pages=8, delay=0,
                 )
 
             with connect(db) as conn:
