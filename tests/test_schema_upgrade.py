@@ -16,7 +16,8 @@ class SchemaUpgradeTests(unittest.TestCase):
                 expected = {
                     "evidence": {"confidence", "source_authority"},
                     "discovered_urls": {"source_id", "depth", "attempts", "last_attempt_at", "last_error"},
-                    "crawled_pages": {"duplicate_of_url", "is_indexable"},\n                    "page_versions": {"page_id", "content_hash", "change_type", "captured_at"},
+                    "crawled_pages": {"duplicate_of_url", "is_indexable"},
+                    "page_versions": {"page_id", "content_hash", "change_type", "captured_at"},
                 }
                 for table, required in expected.items():
                     actual = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
