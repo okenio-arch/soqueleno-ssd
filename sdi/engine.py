@@ -129,8 +129,8 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                         continue
                     result = discover_recursive_from_seed(
                         source["url"], db_path, source_id=sid,
-                        max_depth=int(cfg.get("recursive_max_depth", setting("SDI_RECURSIVE_MAX_DEPTH", "2"))),
-                        max_domains=int(cfg.get("recursive_max_domains", setting("SDI_RECURSIVE_MAX_DOMAINS", "30"))),
+                        max_seed_depth=int(cfg.get("max_seed_depth", setting("SDI_MAX_SEED_DEPTH", "2"))),
+                        max_seed_pages=int(cfg.get("max_seed_pages", setting("SDI_MAX_SEED_PAGES", "8"))),
                         max_candidates_per_seed=int(cfg.get("max_candidates_per_run", 20)),
                         timeout=timeout,
                         delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "1.0")),
