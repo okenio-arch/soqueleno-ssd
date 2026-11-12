@@ -114,6 +114,20 @@ def _cell(row, cols: dict[str, int], field: str):
     return clean(row[idx])
 
 
+def _merge_categories(existing: str | None, incoming: str | None) -> str | None:
+    """Merge semicolon-delimited categories without accumulating duplicates."""
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw in (existing or "", incoming or ""):
+        for item in raw.split(";"):
+            value = clean(item)
+            key = value.casefold() if value else ""
+            if value and key not in seen:
+                seen.add(key)
+                values.append(value)
+    return "; ".join(values) or None
+
+
 def _evidence(conn, oid: int, source_id: str, source_url: str, field: str, value: str | None,
               published_at: str | None, dataset_as_of: str | None, status: str = "official_snapshot"):
     if value:
@@ -220,14 +234,19 @@ def import_provider_workbook(xlsx_path: str, db_path: str, source: dict, *, dry_
                 if row:
                     oid = row[0]
             if oid:
+                current = conn.execute(
+                    "SELECT provider_categories,immigration_services FROM organisations WHERE organisation_id=?",
+                    (oid,),
+                ).fetchone()
+                categories = _merge_categories(current["provider_categories"], r["category"])
+                services = _merge_categories(current["immigration_services"], r["category"])
                 conn.execute(
                     """UPDATE organisations SET website=coalesce(website,?),domain=coalesce(domain,?),address=coalesce(address,?),
                     postcode=coalesce(postcode,?),phone=coalesce(phone,?),public_email=coalesce(public_email,?),city=coalesce(city,?),
-                    region=coalesce(region,?),provider_categories=trim(coalesce(provider_categories,'') || CASE WHEN provider_categories IS NULL OR provider_categories='' THEN '' ELSE '; ' END || ?),
-                    immigration_services=trim(coalesce(immigration_services,'') || CASE WHEN immigration_services IS NULL OR immigration_services='' THEN '' ELSE '; ' END || ?),
+                    region=coalesce(region,?),provider_categories=?,immigration_services=?,
                     last_seen_at=CURRENT_TIMESTAMP,source_quality=max(source_quality,0.78) WHERE organisation_id=?""",
                     (r["website"], r["domain"], r["address"], r["postcode"], r["phone"], r["email"], r["city"], r["region"],
-                     r["category"], r["category"], oid),
+                     categories, services, oid),
                 )
                 result["updated"] += 1
             else:
