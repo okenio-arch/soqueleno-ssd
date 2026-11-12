@@ -83,11 +83,33 @@ def bounded_get(client: httpx.Client, url: str, *, max_bytes: int = 2_000_000,
         host = (parsed.hostname or "").lower()
         if allowed_hosts is not None and host not in allowed_hosts:
             raise CrawlBlocked("Host fora da allowlist da fonte")
-        # Re-resolve immediately before every network hop; redirects are never followed implicitly.
+        # Pin the socket destination to a validated public IP. Host and TLS SNI
+        # remain the original hostname, so virtual hosting and certificate checks work.
         current = validate_public_url(current)
-        expected_addresses = _resolve_public_addresses(host)
-        request = client.build_request("GET", current)
-        response = client.send(request, stream=True, follow_redirects=False)
+        expected_addresses = sorted(_resolve_public_addresses(host), key=str)
+        response = None
+        request = None
+        last_connect_error = None
+        for pinned_ip in expected_addresses:
+            ip_host = f"[{pinned_ip}]" if pinned_ip.version == 6 else str(pinned_ip)
+            port_suffix = f":{parsed.port}" if parsed.port is not None else ""
+            connect_url = current.replace(parsed.netloc, ip_host + port_suffix, 1)
+            candidate_request = client.build_request("GET", connect_url)
+            host_header = f"[{host}]" if ":" in host else host
+            candidate_request.headers["Host"] = host_header + port_suffix
+            if parsed.scheme == "https":
+                candidate_request.extensions["sni_hostname"] = host
+            try:
+                response = client.send(candidate_request, stream=True, follow_redirects=False)
+                request = candidate_request
+                request.url = httpx.URL(current)
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_connect_error = exc
+        if response is None or request is None:
+            if last_connect_error:
+                raise last_connect_error
+            raise CrawlBlocked("Não foi possível estabelecer ligação ao IP público validado")
         try:
             peer = response.extensions.get("network_stream")
             if peer is None:
@@ -100,7 +122,7 @@ def bounded_get(client: httpx.Client, url: str, *, max_bytes: int = 2_000_000,
             except ValueError as exc:
                 raise CrawlBlocked("Endereço IP remoto inválido") from exc
             if not peer_ip.is_global or peer_ip not in expected_addresses:
-                raise CrawlBlocked("O IP remoto não corresponde à resolução DNS pública validada")
+                raise CrawlBlocked("O IP remoto não corresponde ao destino DNS fixado")
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = response.headers.get("location")
                 if not location or hop >= max_redirects:
