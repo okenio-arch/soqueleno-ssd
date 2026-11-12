@@ -23,7 +23,7 @@ def search_organisations(db_path: str, query: str, *, limit: int = 25, city: str
     sql = """SELECT o.organisation_id,o.canonical_name,o.website,o.domain,o.city,o.region,o.postcode,
     o.organisation_type,o.immigration_services,o.provider_categories,o.regulator,o.regulator_reference,
     o.regulator_status,o.profile_status,o.confidence,o.source_quality,o.address,o.phone,o.public_email,
-    bm25(sdi_org_search) AS rank
+    bm25(sdi_org_search,10.0,3.0,1.0,1.0,0.5,2.0,4.0,3.0,3.0,1.0,0.2,0.1,0.0) AS rank
     FROM sdi_org_search JOIN organisations o ON o.organisation_id=sdi_org_search.organisation_id
     WHERE sdi_org_search MATCH ?"""
     params: list[object] = [fts]
@@ -51,7 +51,7 @@ def search_everything(db_path: str, query: str, *, limit: int = 30, city: str | 
     org_params: list[object] = [fts]
     page_sql = """SELECT p.page_id,p.organisation_id,p.url,p.title,p.description,
     snippet(sdi_page_search,2,'<mark>','</mark>',' … ',28) AS snippet,
-    o.canonical_name,o.website,o.domain,bm25(sdi_page_search) AS rank
+    o.canonical_name,o.website,o.domain,bm25(sdi_page_search,8.0,4.0,1.0,0.0,0.0,0.0) AS rank
     FROM sdi_page_search JOIN crawled_pages p ON p.page_id=sdi_page_search.page_id
     LEFT JOIN organisations o ON o.organisation_id=p.organisation_id
     WHERE sdi_page_search MATCH ? AND p.is_indexable=1"""
