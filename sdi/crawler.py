@@ -14,7 +14,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .db import connect
-from .normalise import normalise_url, domain_of, clean
+from .normalise import normalise_url, domain_of, clean, canonical_page_url
 
 SOURCE_ID = "organisation_websites"
 USER_AGENT = "SoquelenoSDI/0.8 (local UK immigration provider research index)"
@@ -31,21 +31,31 @@ class CrawlBlocked(ValueError):
     pass
 
 
-def _public_host(host: str) -> bool:
+def _resolve_public_addresses(host: str) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return False
-    addresses = []
+    except socket.gaierror as exc:
+        raise CrawlBlocked("Host não resolvido") from exc
+    addresses = set()
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
+        except ValueError as exc:
+            raise CrawlBlocked("DNS devolveu um endereço IP inválido") from exc
         if not ip.is_global:
-            return False
-        addresses.append(ip)
-    return bool(addresses)
+            raise CrawlBlocked("Host resolve para um endereço IP não público")
+        addresses.add(ip)
+    if not addresses:
+        raise CrawlBlocked("Host sem endereços públicos")
+    return addresses
+
+
+def _public_host(host: str) -> bool:
+    try:
+        _resolve_public_addresses(host)
+        return True
+    except CrawlBlocked:
+        return False
 
 
 def validate_public_url(url: str) -> str:
@@ -64,6 +74,84 @@ def validate_public_url(url: str) -> str:
     return value
 
 
+def bounded_get(client: httpx.Client, url: str, *, max_bytes: int = 2_000_000,
+                allowed_hosts: set[str] | None = None, max_redirects: int = 3) -> httpx.Response:
+    """GET a public URL with streamed byte limits and explicit redirect validation."""
+    current = validate_public_url(url)
+    for hop in range(max(0, min(int(max_redirects), 5)) + 1):
+        parsed = urlparse(current)
+        host = (parsed.hostname or "").lower()
+        if allowed_hosts is not None and host not in allowed_hosts:
+            raise CrawlBlocked("Host fora da allowlist da fonte")
+        # Pin the socket destination to a validated public IP. Host and TLS SNI
+        # remain the original hostname, so virtual hosting and certificate checks work.
+        current = validate_public_url(current)
+        expected_addresses = sorted(_resolve_public_addresses(host), key=str)
+        response = None
+        request = None
+        last_connect_error = None
+        for pinned_ip in expected_addresses:
+            ip_host = f"[{pinned_ip}]" if pinned_ip.version == 6 else str(pinned_ip)
+            port_suffix = f":{parsed.port}" if parsed.port is not None else ""
+            connect_url = current.replace(parsed.netloc, ip_host + port_suffix, 1)
+            candidate_request = client.build_request("GET", connect_url)
+            host_header = f"[{host}]" if ":" in host else host
+            candidate_request.headers["Host"] = host_header + port_suffix
+            if parsed.scheme == "https":
+                candidate_request.extensions["sni_hostname"] = host
+            try:
+                response = client.send(candidate_request, stream=True, follow_redirects=False)
+                request = candidate_request
+                request.url = httpx.URL(current)
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_connect_error = exc
+        if response is None or request is None:
+            if last_connect_error:
+                raise last_connect_error
+            raise CrawlBlocked("Não foi possível estabelecer ligação ao IP público validado")
+        try:
+            peer = response.extensions.get("network_stream")
+            if peer is None:
+                raise CrawlBlocked("Não foi possível verificar o endereço IP remoto da ligação")
+            address = peer.get_extra_info("server_addr")
+            if not address:
+                raise CrawlBlocked("A ligação não revelou o endereço IP remoto")
+            try:
+                peer_ip = ipaddress.ip_address(address[0])
+            except ValueError as exc:
+                raise CrawlBlocked("Endereço IP remoto inválido") from exc
+            if not peer_ip.is_global or peer_ip != pinned_ip:
+                raise CrawlBlocked("O IP remoto não corresponde ao destino DNS fixado")
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location or hop >= max_redirects:
+                    raise CrawlBlocked("Redirecionamento ausente ou limite de redirecionamentos atingido")
+                target = validate_public_url(urljoin(current, location))
+                target_host = (urlparse(target).hostname or "").lower()
+                if allowed_hosts is not None and target_host not in allowed_hosts:
+                    raise CrawlBlocked("Redirecionamento para host não autorizado")
+                current = target
+                continue
+            length = response.headers.get("content-length")
+            if length and length.isdigit() and int(length) > max_bytes:
+                raise CrawlBlocked(f"Resposta excede o limite de {max_bytes} bytes")
+            chunks = []
+            total = 0
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise CrawlBlocked(f"Resposta excede o limite de {max_bytes} bytes")
+                chunks.append(chunk)
+            return httpx.Response(
+                response.status_code, headers=response.headers, content=b"".join(chunks),
+                request=request, extensions=response.extensions,
+            )
+        finally:
+            response.close()
+    raise CrawlBlocked("Limite de redirecionamentos atingido")
+
+
 def _robots_parser(client: httpx.Client, url: str, cache: dict[str, RobotFileParser | None]) -> RobotFileParser | None:
     parsed = urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}".lower()
@@ -71,7 +159,7 @@ def _robots_parser(client: httpx.Client, url: str, cache: dict[str, RobotFilePar
         return cache[origin]
     robots_url = origin + "/robots.txt"
     try:
-        response = client.get(robots_url, headers={"User-Agent": USER_AGENT})
+        response = bounded_get(client, robots_url, max_bytes=512_000)
         if response.status_code in (401, 403, 429) or response.status_code >= 500 or 300 <= response.status_code < 400:
             cache[origin] = None
             return None
@@ -80,7 +168,7 @@ def _robots_parser(client: httpx.Client, url: str, cache: dict[str, RobotFilePar
         parser.parse(response.text.splitlines() if response.status_code < 400 else [])
         cache[origin] = parser
         return parser
-    except httpx.HTTPError:
+    except (httpx.HTTPError, CrawlBlocked):
         cache[origin] = None
         return None
 
@@ -94,40 +182,44 @@ def _robots_allows(client: httpx.Client, url: str, cache: dict) -> bool:
 
 def _sitemaps(client: httpx.Client, origin: str, robots_cache: dict, max_urls: int) -> list[str]:
     parser = _robots_parser(client, origin + "/", robots_cache)
-    sitemap_urls = []
-    # RobotFileParser does not expose Sitemap directives; parse robots.txt separately.
-    try:
-        resp = client.get(origin.rstrip("/") + "/robots.txt", headers={"User-Agent": USER_AGENT})
-        if resp.status_code == 200:
-            for line in resp.text.splitlines():
-                if line.lower().startswith("sitemap:"):
-                    sitemap_urls.append(line.split(":", 1)[1].strip())
-    except httpx.HTTPError:
-        return []
-    urls: list[str] = []
-    for sitemap in sitemap_urls[:3]:
+    pending = list(parser.site_maps() if parser else [])
+    seen_sitemaps: set[str] = set()
+    page_urls: list[str] = []
+    origin_domain = domain_of(origin)
+    origin_host = (urlparse(origin).hostname or "").lower()
+    while pending and len(seen_sitemaps) < 5 and len(page_urls) < max_urls:
+        sitemap = pending.pop(0)
         try:
-            sitemap = validate_public_url(sitemap)
+            sitemap = canonical_page_url(validate_public_url(sitemap))
+            if sitemap in seen_sitemaps or domain_of(sitemap) != origin_domain:
+                continue
+            seen_sitemaps.add(sitemap)
             if not _robots_allows(client, sitemap, robots_cache):
                 continue
-            response = client.get(sitemap)
+            response = bounded_get(client, sitemap, max_bytes=2_000_000, allowed_hosts={origin_host})
             if response.status_code != 200:
                 continue
             root = ET.fromstring(response.content)
+            is_index = root.tag.lower().endswith("sitemapindex")
             for node in root.iter():
-                if node.tag.endswith("loc") and node.text:
-                    candidate = node.text.strip()
-                    try:
-                        candidate = validate_public_url(candidate)
-                    except CrawlBlocked:
-                        continue
-                    if domain_of(candidate) == domain_of(origin):
-                        urls.append(candidate)
-                        if len(urls) >= max_urls:
-                            return urls
+                if not node.tag.lower().endswith("loc") or not node.text:
+                    continue
+                try:
+                    candidate = canonical_page_url(validate_public_url(node.text.strip()))
+                except CrawlBlocked:
+                    continue
+                if domain_of(candidate) != origin_domain:
+                    continue
+                if is_index:
+                    if candidate not in seen_sitemaps and candidate not in pending:
+                        pending.append(candidate)
+                elif candidate not in page_urls:
+                    page_urls.append(candidate)
+                    if len(page_urls) >= max_urls:
+                        break
         except (httpx.HTTPError, ET.ParseError, CrawlBlocked, ValueError):
             continue
-    return urls
+    return page_urls
 
 
 def _parse_page(response: httpx.Response) -> tuple[str, str, str, BeautifulSoup, bool]:
@@ -167,9 +259,15 @@ def _service_signals(text: str) -> list[str]:
 def _ensure_website_source(db_path: str) -> None:
     with connect(db_path) as conn:
         conn.execute(
-            """INSERT OR IGNORE INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            (SOURCE_ID, "Imported organisation websites", "https://example.invalid", "organisation_websites", 20,
+            """INSERT INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(source_id) DO UPDATE SET
+                url=excluded.url,
+                name=excluded.name,
+                notes=excluded.notes,
+                source_type=excluded.source_type,
+                updated_at=CURRENT_TIMESTAMP""",
+            (SOURCE_ID, "Imported organisation websites", "sdi://organisation-websites", "organisation_websites", 20,
              "robots_checked_http", "enabled", "Limited crawl of websites listed by official datasets or approved sources; same-site pages only.",
              "website_crawl", "{}"),
         )
@@ -182,13 +280,13 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
     _ensure_website_source(db_path)
     with connect(db_path) as conn:
         conn.execute("UPDATE organisations SET website_last_attempt_at=CURRENT_TIMESTAMP,website_crawl_status='running' WHERE organisation_id=?", (organisation_id,))
-    queue = deque([(start, 0)])
+    queue = deque([(canonical_page_url(start), 0)])
     seen: set[str] = set()
     pages = external_candidates = 0
     errors: list[dict] = []
     robots_cache: dict = {}
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
-    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
         # The sitemap is an index of the same public website, not a search-engine API.
         for sitemap_url in _sitemaps(client, f"{urlparse(start).scheme}://{urlparse(start).netloc}", robots_cache, max_pages):
             queue.append((sitemap_url, 1))
@@ -198,13 +296,13 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                 continue
             seen.add(url)
             try:
-                url = validate_public_url(url)
+                url = canonical_page_url(validate_public_url(url))
                 if domain_of(url) != host:
                     continue
                 if not _robots_allows(client, url, robots_cache):
                     errors.append({"url": url, "error": "robots.txt não autoriza ou não pôde ser consultado"})
                     continue
-                response = client.get(url)
+                response = bounded_get(client, url, max_bytes=2_000_000, allowed_hosts={(urlparse(start).hostname or "").lower()})
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if location:
@@ -225,14 +323,25 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         conn.execute("UPDATE crawled_pages SET is_indexable=0,fetched_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
                     continue
                 with connect(db_path) as conn:
+                    duplicate = conn.execute(
+                        """SELECT url FROM crawled_pages WHERE organisation_id=? AND content_hash=?
+                        AND url<>? AND is_indexable=1 ORDER BY fetched_at ASC LIMIT 1""",
+                        (organisation_id, digest, url),
+                    ).fetchone()
+                    canonical_url = duplicate["url"] if duplicate else None
                     conn.execute(
-                        """INSERT INTO crawled_pages(organisation_id,source_id,url,final_url,http_status,title,description,text_content,content_hash,crawl_status,depth,is_indexable)
-                        VALUES(?,?,?,?,?,?,?,?,?,'success',?,1)
+                        """INSERT INTO crawled_pages(organisation_id,source_id,url,final_url,http_status,title,description,text_content,content_hash,crawl_status,depth,is_indexable,duplicate_of_url)
+                        VALUES(?,?,?,?,?,?,?,?,?,'success',?,?,?)
                         ON CONFLICT(url) DO UPDATE SET organisation_id=excluded.organisation_id,final_url=excluded.final_url,http_status=excluded.http_status,
                         title=excluded.title,description=excluded.description,text_content=excluded.text_content,content_hash=excluded.content_hash,
-                        fetched_at=CURRENT_TIMESTAMP,crawl_status='success',error=NULL,depth=excluded.depth,is_indexable=1""",
-                        (organisation_id, SOURCE_ID, url, final_url, response.status_code, title, description, text, digest, depth),
+                        fetched_at=CURRENT_TIMESTAMP,crawl_status='success',error=NULL,depth=excluded.depth,is_indexable=excluded.is_indexable,
+                        duplicate_of_url=excluded.duplicate_of_url""",
+                        (organisation_id, SOURCE_ID, url, final_url, response.status_code, title, description, text, digest, depth,
+                         0 if canonical_url else 1, canonical_url),
                     )
+                    if canonical_url:
+                        pages += 1
+                        continue
                     fields = {"website_page_title": title, "website_page_description": description}
                     signals = _service_signals(f"{title} {description} {text}")
                     if signals:
@@ -240,7 +349,10 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                     for field, value in fields.items():
                         if value:
                             conn.execute(
-                                "INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'website_observation')",
+                                """INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                                VALUES(?,?,?,?,?,'website_observation',0.60,'Organisation website')
+                                ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET
+                                collected_at=CURRENT_TIMESTAMP,confidence=0.60,evidence_status='website_observation'""",
                                 (organisation_id, SOURCE_ID, url, field, value),
                             )
                     org = conn.execute("SELECT immigration_services,phone,public_email FROM organisations WHERE organisation_id=?", (organisation_id,)).fetchone()
@@ -252,14 +364,20 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         ("; ".join(merged), "; ".join(merged), email, phone, organisation_id),
                     )
                     if email:
-                        conn.execute("INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'website_observation')", (organisation_id, SOURCE_ID, url, "public_email", email))
+                        conn.execute("""INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                            VALUES(?,?,?,?,?,'website_observation',0.60,'Organisation website')
+                            ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET collected_at=CURRENT_TIMESTAMP""",
+                            (organisation_id, SOURCE_ID, url, "public_email", email))
                     if phone:
-                        conn.execute("INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status) VALUES(?,?,?,?,?,'website_observation')", (organisation_id, SOURCE_ID, url, "public_phone", phone))
+                        conn.execute("""INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,evidence_status,confidence,source_authority)
+                            VALUES(?,?,?,?,?,'website_observation',0.60,'Organisation website')
+                            ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET collected_at=CURRENT_TIMESTAMP""",
+                            (organisation_id, SOURCE_ID, url, "public_phone", phone))
                     for anchor in soup.find_all("a", href=True):
                         raw = urldefrag(urljoin(final_url, anchor["href"]))[0]
                         label = clean(anchor.get_text(" ", strip=True)) or ""
                         try:
-                            candidate = validate_public_url(raw)
+                            candidate = canonical_page_url(validate_public_url(raw))
                         except CrawlBlocked:
                             continue
                         candidate_domain = domain_of(candidate)

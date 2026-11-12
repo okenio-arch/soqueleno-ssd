@@ -264,8 +264,8 @@ def import_iaa_xlsx(
                         """INSERT OR IGNORE INTO evidence
                            (organisation_id, source_id, source_url, field_name,
                             field_value, source_published_at, dataset_as_of,
-                            evidence_status)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 'official_snapshot')""",
+                            evidence_status, confidence, source_authority)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 'official_snapshot', 0.90, 'Immigration Advice Authority')""",
                         (
                             organisation_id,
                             IAA_SOURCE_ID,

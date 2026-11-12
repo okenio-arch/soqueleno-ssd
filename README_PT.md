@@ -1,31 +1,46 @@
-# Soqueleno Discovery Infrastructure (SDI) 0.5.0
+# Soqueleno Discovery Infrastructure (SDI)
 
-**Entrega:** fundação, catálogo de fontes, importação IAA, crawler web controlado, perfis organizacionais e pesquisa FTS5/API interna autenticada.
+**Versão do serviço:** 0.9.0
 
-## O que esta versão faz
+A SDI é uma infraestrutura focada de descoberta, indexação e evidência para fornecedores jurídicos do Reino Unido. É uma fonte de pesquisa para o Scout, não um substituto do Scout e não um motor de pesquisa geral da Internet.
 
-1. Mantém catálogo das fontes e respetivos métodos/estado de acesso.
-2. Importa o snapshot XLSX da IAA, preservando publicação e data de referência.
-3. Guarda organizações e evidências por campo, com URL e datas.
-4. Permite crawling manual de um website de organização já identificada. Segue apenas ligações do mesmo domínio, consulta `robots.txt`, limita profundidade/páginas e rejeita destinos privados/não públicos.
-5. Extrai título, descrição, texto e sinais de serviços de imigração. Não transforma sinais em confirmação legal.
-6. Pesquisa organizações através de SQLite FTS5.
-7. Expõe endpoints internos protegidos por Bearer API key.
+## O que a SDI faz
 
-## O que NÃO faz
+- Importa datasets oficiais e mantém o respetivo contexto de publicação e data de referência.
+- Descobre organizações através de seeds HTML aprovadas e expansão recursiva limitada.
+- Enriquece websites públicos já associados a organizações, respeitando robots.txt e limites de recolha.
+- Indexa páginas e organizações em SQLite FTS5.
+- Deduplica páginas e categorias repetidas.
+- Guarda evidência por campo, com URL, autoridade, tipo de evidência, data de recolha, data de publicação, data de referência e confiança.
+- Expõe pesquisa e perfis através de uma API interna autenticada.
+- Disponibiliza um Founder Console local para executar ciclos, consultar fontes, ver métricas, pesquisar e abrir evidências.
 
-- Não faz crawling global nem corre em background.
-- Não contorna logins, paywalls, CAPTCHAs, robots.txt ou limites.
-- Não faz scraping automático dos diretórios Law Society/SRA/IAA. Esses conectores só devem ser implementados após confirmar formatos, permissões e condições de utilização.
-- Não confirma que uma autorização IAA continua ativa: o dataset importado é um snapshot de 09-07-2026, publicado em 25-09-2026.
-- Não substitui a investigação comercial do Scout.
+## O que não faz
 
-## Instalação Windows (PowerShell)
+- Não pesquisa nem indexa a Internet inteira.
+- Não confirma elegibilidade legal nem substitui a decisão do Scout.
+- Não transforma texto de websites em autorização regulatória confirmada.
+- Não contorna autenticação, paywalls, CAPTCHA, robots.txt ou restrições de reutilização.
+- Não ativa automaticamente fontes cuja autorização, credenciais ou adaptador estejam em falta.
 
-Extrai a pasta `soqueleno-sdi` para:
-`C:\Users\<teu utilizador>\Documents\soqueleno-sdi`
+## Estado das fontes
 
-Abre PowerShell nessa pasta:
+| Fonte | Estado | Limite |
+|---|---|---|
+| IAA FOI register | Importador oficial ativo | Snapshot com data de referência 09-07-2026; não é estado de autorização em tempo real. |
+| LAA provider directory | Ativo | Diretório de legal aid; importar apenas categorias Immigration/Asylum. |
+| LAA South West remote access | Ativo | Apenas o âmbito regional declarado. |
+| IAA Adviser Finder | Bloqueado | O aviso oficial de 09-11-2026 informa que Adviser Finder e Adviser Register continuam indisponíveis. |
+| SRA Data Share API V1 | Bloqueado até registo e chave | A API é gratuita, mas requer conta/subscrição e atribuição pública à SRA. O adaptador ainda não está implementado. |
+| Law Society Find a Solicitor | Bloqueado | Não automatizar sem autorização escrita compatível com reutilização comercial. |
+
+Não existe atualmente uma seed HTML ativa no catálogo. A descoberta recursiva está implementada, mas permanece sem uma fonte inicial aprovada. Não inventar uma seed para fazer os contadores parecerem ocupados.
+
+Consulta o inventário detalhado em [docs/SDI_ENGINEERING_STATUS.md](docs/SDI_ENGINEERING_STATUS.md).
+
+## Instalação Windows / PowerShell
+
+Na pasta do repositório:
 
 ```powershell
 py -3 -m venv .venv
@@ -35,18 +50,15 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 python main.py init
 python main.py load-sources
-python main.py create-key --client scout
 ```
 
 Se o PowerShell bloquear a ativação do ambiente virtual, executa apenas nessa janela:
-`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
 
-## Importar IAA
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
 
-Descarrega manualmente o XLSX da página oficial:
-https://www.gov.uk/government/publications/register-of-currently-registered-immigration-advice-organisations
-
-Coloca o ficheiro em `data\IAA_register.xlsx`.
+## Importação IAA manual
 
 ```powershell
 python main.py inspect-iaa --file data/IAA_register.xlsx
@@ -54,62 +66,101 @@ python main.py import-iaa --file data/IAA_register.xlsx --dry-run
 python main.py import-iaa --file data/IAA_register.xlsx
 ```
 
-Confirma o relatório do `dry-run` antes de remover `--dry-run`. O importador exige cabeçalhos reconhecidos e deduplica pelo número de registo IAA.
+O dry-run deve ser verificado antes de importar. A importação automática a partir de GOV.UK é feita pelo ciclo de descoberta quando a fonte estiver vencida e ativa.
 
-## Consultar organizações
+## Chaves API: separar Scout e Founder Console
 
-```powershell
-python main.py list
-python main.py search --query "immigration London"
-```
-
-## Crawling manual e limitado
-
-Primeiro obtém o `organisation_id` com `python main.py list`. Depois:
+A chave do Scout deve ser read-only:
 
 ```powershell
-python main.py crawl --organisation-id 1 --url https://www.exemplo.co.uk --max-pages 10 --max-depth 1
+python main.py create-key --client scout
 ```
 
-Começa com limites pequenos. O crawler só visita o website indicado e ligações internas do mesmo domínio. Ligações externas são guardadas como candidatos, não visitadas automaticamente. A consulta de `robots.txt` é feita antes de cada página. Um erro de DNS, robots ou HTTP fica registado no relatório.
+A chave do Founder Console precisa de permissões de execução e gestão de fontes. Cria-a separadamente:
 
-## API interna
+```powershell
+python main.py create-key --client sdi-console --scopes organisations:read,discovery:run,sources:manage
+```
 
-A chave é criada por consumidor. A base de dados guarda apenas o hash, não a chave em texto. O comando mostra a chave uma única vez. Guarda-a no ficheiro de configuração privado do Scout, nunca no código-fonte. Para Auren, executa `python main.py create-key --client auren` e guarda a chave separadamente. Repetir o comando para um consumidor roda/substitui a respetiva chave anterior.
+A chave é apresentada uma única vez. Guarda-a num gestor de segredos ou local seguro. A base de dados guarda apenas o hash. Não coloques a chave em código, GitHub ou screenshots.
 
-Inicia o serviço:
+Scopes permitidos:
+- organisations:read
+- discovery:run
+- sources:manage
+
+## Executar o Founder Console
 
 ```powershell
 python main.py serve
 ```
 
-Verificação de saúde (não requer chave): `http://127.0.0.1:8100/health`
+Abre:
 
-Pesquisa (requer Bearer token):
+- Console: http://127.0.0.1:8100/
+- Health: http://127.0.0.1:8100/health
+- API docs: http://127.0.0.1:8100/docs
+
+Cola a chave sdi-console no painel. A chave fica apenas na memória da página e não é guardada em localStorage.
+
+A execução automática e o scheduler estão desativados por defeito. O utilizador inicia os ciclos manualmente no painel. Para ativar o scheduler, altera explicitamente no .env:
+
+```env
+SDI_SCHEDULER_ENABLED=true
+SDI_AUTO_RUN_ON_START=false
+SDI_SCHEDULE_HOURS=24
+```
+
+## Pesquisa e API para o Scout
+
+Pesquisa de organizações:
 
 ```powershell
 $headers = @{ Authorization = "Bearer COLOCA_A_CHAVE_SCOUT_AQUI" }
-Invoke-RestMethod -Uri "http://127.0.0.1:8100/api/v1/organisations/search?q=immigration&limit=10" -Headers $headers
+Invoke-RestMethod -Uri "http://127.0.0.1:8100/api/v1/organisations/search?q=immigration%20solicitor&limit=20" -Headers $headers
 ```
 
-Nota: o `.env` é lido pela aplicação Python. Para usar a chave na variável PowerShell, carrega-a manualmente nessa sessão ou copia temporariamente o valor, sem o guardar em scripts.
-
-Perfil: `GET /api/v1/organisations/{organisation_id}` com o mesmo header.
-
-## Testes offline
+Pesquisa combinada de organizações e páginas:
 
 ```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8100/api/v1/search?q=skilled%20worker&limit=30" -Headers $headers
+```
+
+Perfil com evidências:
+
+```powershell
+Invoke-RestMethod -Uri "http://127.0.0.1:8100/api/v1/organisations/1" -Headers $headers
+```
+
+Cada campo relevante deve ser interpretado com a respetiva evidência. official_snapshot, website_observation e discovery_observation não são equivalentes. Os valores de confiança são pesos heurísticos, não probabilidades estatísticas.
+
+## Segurança do crawler
+
+- Apenas HTTP/HTTPS, sem credenciais e sem portas não padrão.
+- DNS público validado e socket ligado diretamente a um IP fixado; Host e SNI continuam a usar o hostname original.
+- Clientes sem proxies herdados do ambiente.
+- Respostas em streaming com limites de bytes: robots.txt 512 KB, HTML/sitemaps 2 MB, XLSX oficial 35 MB.
+- Redirecionamentos manuais, limitados e sujeitos a allowlists.
+- robots.txt consultado antes das páginas; falhas de consulta são tratadas de forma conservadora.
+- Sitemap indexes limitados a cinco ficheiros por origem.
+- Fragments e parâmetros de tracking removidos da identidade da página.
+- Conteúdo duplicado por organização excluído do índice de pesquisa.
+- Descoberta recursiva com limites de profundidade/domínios/candidatos, persistência da fila e até três tentativas por domínio.
+
+## Testes
+
+```powershell
+python -m compileall -q sdi tests main.py
 python -m unittest discover -s tests -v
 ```
 
-Os testes usam dados sintéticos e não fazem chamadas à Internet. Não provam que o dataset IAA real foi importado nem que websites reais autorizam crawling.
+Os testes offline não substituem testes de rede reais, migração sobre uma cópia da base SQLite existente ou validação do comportamento do Founder Console no computador local.
 
-## Dados e segurança
+## Dados e configuração
 
-- `data/sdi.sqlite3`: base de dados operacional.
-- `config/sources.json`: catálogo declarativo das fontes.
-- `.env`: limites e configuração local, nunca partilhar.
-- `api_clients`: hashes das chaves por consumidor; as chaves em texto são mostradas apenas uma vez.
-- `storage/`: reservado para artefactos futuros; conteúdo extraído fica atualmente na base de dados.
-- A API escuta por defeito apenas em `127.0.0.1`.
-- Não expor a API à Internet sem autenticação/autorização mais robusta, TLS, gestão de segredos e revisão de segurança.
+- data/sdi.sqlite3: base operacional.
+- config/sources.json: catálogo declarativo das fontes.
+- .env: limites e configuração local, nunca partilhar.
+- storage/datasets: snapshots oficiais descarregados.
+- api_clients: hashes das chaves por consumidor.
+- A API escuta por defeito em 127.0.0.1. Não a exponhas à Internet sem autenticação, TLS, gestão de segredos e revisão de segurança.

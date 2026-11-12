@@ -35,6 +35,29 @@ def _source_due(conn, source_id: str, refresh_hours: int) -> bool:
     return not row or row["last_success_at"] is None or float(row["age_hours"] or 0) >= max(1, refresh_hours)
 
 
+def recover_interrupted_work(db_path: str | None = None) -> dict:
+    """Mark stale jobs and runs interrupted after a process restart."""
+    db_path = db_path or str(ROOT / "data" / "sdi.sqlite3")
+    with connect(db_path) as conn:
+        jobs = conn.execute(
+            """UPDATE discovery_jobs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            error=coalesce(error,'Recovered after process interruption')
+            WHERE status='running' AND started_at IS NOT NULL
+            AND julianday('now')-julianday(started_at) > (15.0/1440.0)"""
+        ).rowcount
+        queued = conn.execute(
+            """UPDATE discovery_jobs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            error=coalesce(error,'Queued job expired before execution')
+            WHERE status='queued' AND julianday('now')-julianday(created_at) > (30.0/1440.0)"""
+        ).rowcount
+        runs = conn.execute(
+            """UPDATE discovery_runs SET status='interrupted',finished_at=CURRENT_TIMESTAMP,
+            error=coalesce(error,'Recovered after process interruption')
+            WHERE status='running' AND julianday('now')-julianday(started_at) > (15.0/1440.0)"""
+        ).rowcount
+    return {"jobs_interrupted": jobs + queued, "runs_interrupted": runs}
+
+
 def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait_for_lock: bool = False) -> dict:
     """Run the complete focused discovery pipeline from the built-in source registry.
 
@@ -52,12 +75,13 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
         "records_seen": 0, "records_accepted": 0, "organisations_created": 0,
         "organisations_updated": 0, "websites_crawled": 0, "pages_indexed": 0,
         "external_candidates_recorded": 0, "seed_pages_checked": 0,
-        "recursive_domains_processed": 0, "seed_candidates_found": 0,
+        "recursive_domains_processed": 0, "seed_candidates_found": 0, "seed_candidates_accepted": 0, "seed_candidates_rejected": 0,
         "results": [], "errors": [],
     }
     run_id = None
     try:
         initialise(db_path)
+        recover_interrupted_work(db_path)
         load_sources(str(ROOT / "config" / "sources.json"), db_path)
         with connect(db_path) as conn:
             run_id = conn.execute(
@@ -111,15 +135,23 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                         timeout=timeout,
                         delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "1.0")),
                     )
+                    source_errors = result.get("errors", [])
+                    source_ok = result.get("status", "completed") == "completed" and not source_errors
                     with connect(db_path) as conn:
-                        conn.execute("UPDATE sources SET last_success_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (sid,))
+                        if source_ok:
+                            conn.execute("UPDATE sources SET last_success_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (sid,))
+                        else:
+                            conn.execute("UPDATE sources SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE source_id=?",
+                                         (json.dumps(source_errors[:5], ensure_ascii=False)[:1000] or result.get("status", "incomplete"), sid))
                     report["sources_run"] += 1
                     report["seed_pages_checked"] += int(result.get("pages_checked", 0))
                     report["recursive_domains_processed"] += int(result.get("domains_processed", 0))
                     report["seed_candidates_found"] += int(result.get("candidates_found", 0))
-                    report["external_candidates_recorded"] += int(result.get("candidates_found", 0))
+                    report["seed_candidates_accepted"] += int(result.get("candidates_accepted", 0))
+                    report["seed_candidates_rejected"] += int(result.get("candidates_rejected", 0))
                     report["organisations_created"] += int(result.get("organisations_created", 0))
                     report["organisations_updated"] += int(result.get("organisations_updated", 0))
+                    report["errors"].extend({"source_id": sid, **item} for item in source_errors[:20])
                     report["results"].append({"source_id": sid, "name": source["name"], **result})
                 else:
                     report["results"].append({"source_id": sid, "name": source["name"], "status": "skipped", "reason": "Adaptador ainda não implementado"})
@@ -171,7 +203,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                 conn.execute(
                     """UPDATE discovery_runs SET finished_at=CURRENT_TIMESTAMP,pages_checked=?,candidates_found=?,
                     organisations_created=?,organisations_updated=?,datasets_imported=?,status=?,error=? WHERE run_id=?""",
-                    (report["pages_indexed"], report["external_candidates_recorded"], report["organisations_created"],
+                    (report["pages_indexed"] + report["seed_pages_checked"], report["seed_candidates_found"], report["organisations_created"],
                      report["organisations_updated"], report["datasets_imported"], report["status"],
                      json.dumps(report["errors"][:10], ensure_ascii=False) if report["errors"] else None, run_id),
                 )
@@ -211,7 +243,7 @@ def execute_job(job_id: int, db_path: str | None = None) -> None:
 
 def start_scheduler(db_path: str | None = None) -> None:
     global _SCHEDULER_THREAD
-    if setting("SDI_SCHEDULER_ENABLED", "true").casefold() not in {"1", "true", "yes", "on"}:
+    if setting("SDI_SCHEDULER_ENABLED", "false").casefold() not in {"1", "true", "yes", "on"}:
         return
     if _SCHEDULER_THREAD and _SCHEDULER_THREAD.is_alive():
         return
@@ -219,7 +251,7 @@ def start_scheduler(db_path: str | None = None) -> None:
     db_path = db_path or str(ROOT / "data" / "sdi.sqlite3")
 
     def loop():
-        run_on_start = setting("SDI_AUTO_RUN_ON_START", "true").casefold() in {"1", "true", "yes", "on"}
+        run_on_start = setting("SDI_AUTO_RUN_ON_START", "false").casefold() in {"1", "true", "yes", "on"}
         interval_hours = max(1, int(setting("SDI_SCHEDULE_HOURS", "24")))
         first = True
         while not _SCHEDULER_STOP.is_set():

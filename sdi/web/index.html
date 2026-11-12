@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soqueleno SDI</title>
+<style>
+:root{color-scheme:dark;--bg:#101113;--panel:#181a1e;--panel2:#202329;--line:#30343b;--text:#eceef1;--muted:#9ca3ad;--accent:#c9d0d8;--good:#8fc9a5;--warn:#e4bd79;--bad:#e28b8b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,Segoe UI,Arial,sans-serif}
+main{max-width:1240px;margin:0 auto;padding:28px 22px 60px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}
+h1{font-size:22px;letter-spacing:-.04em;margin:0}h2{font-size:15px;margin:0 0 14px}p{margin:4px 0;color:var(--muted)}small,.muted{color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px}
+.connect{display:flex;gap:8px;max-width:620px;width:100%}.connect input{flex:1}
+input{min-width:0;background:#101215;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:inherit}
+button{background:#e2e6eb;color:#16181b;border:0;border-radius:8px;padding:9px 13px;font:600 13px inherit;cursor:pointer}
+button.secondary{background:var(--panel2);color:var(--text);border:1px solid var(--line)}button:disabled{opacity:.45;cursor:not-allowed}
+.status{font-size:12px;color:var(--muted);white-space:nowrap}.status.ok{color:var(--good)}.status.error{color:var(--bad)}
+.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:16px}
+.metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;min-height:88px}
+.metric b{display:block;font-size:24px;letter-spacing:-.04em;font-weight:650}.metric span{font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:16px}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:20px;padding:2px 8px;font-size:11px;color:var(--muted)}
+.tag.good{color:var(--good)}.tag.warn{color:var(--warn)}.tag.bad{color:var(--bad)}
+.result{padding:12px 0;border-bottom:1px solid var(--line)}.result:last-child{border:0}.result strong{display:block;font-size:14px}.result a{color:#cbd4df}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);font:12px/1.5 ui-monospace,Consolas,monospace}
+#error{color:var(--bad);min-height:18px;margin-top:8px}.hidden{display:none}
+@media(max-width:900px){.metrics{grid-template-columns:repeat(3,1fr)}.grid{grid-template-columns:1fr}}
+@media(max-width:520px){main{padding:18px 12px}.metrics{grid-template-columns:repeat(2,1fr)}header{align-items:flex-start;flex-direction:column}.connect{flex-direction:column}}
+</style>
+</head>
+<body>
+<main>
+<header>
+ <div><h1>Soqueleno SDI</h1><p>Discovery and evidence console · UK legal providers</p></div>
+ <span id="connection" class="status">Disconnected</span>
+</header>
+<section class="panel">
+ <h2>Ligação segura</h2>
+ <div class="connect">
+  <input id="apiKey" type="password" autocomplete="off" placeholder="Bearer API key da consola">
+  <button id="connectBtn">Ligar</button>
+ </div>
+ <p>Cria uma chave separada para a consola. Não reutilizes a chave do Scout.</p>
+ <div id="error"></div>
+</section>
+<section id="workspace" class="hidden">
+ <div class="metrics">
+  <div class="metric"><b id="m-orgs">0</b><span>Organizações</span></div>
+  <div class="metric"><b id="m-pages">0</b><span>Páginas indexadas</span></div>
+  <div class="metric"><b id="m-evidence">0</b><span>Evidências</span></div>
+  <div class="metric"><b id="m-sources">0</b><span>Fontes activas</span></div>
+  <div class="metric"><b id="m-candidates">0</b><span>Referências externas</span></div>
+  <div class="metric"><b id="m-duplicates">0</b><span>Páginas duplicadas</span></div>
+ </div>
+ <div class="grid">
+  <section class="panel">
+   <div class="toolbar" style="justify-content:space-between">
+    <div><h2>Execução de descoberta</h2><p>Importação oficial, descoberta recursiva e enriquecimento de websites</p></div>
+    <div class="toolbar"><button id="refreshBtn" class="secondary">Actualizar</button><button id="runBtn">Executar ciclo</button></div>
+   </div>
+   <div id="runState" class="result"><span class="muted">Ainda sem execução carregada.</span></div>
+   <div id="queueState" class="toolbar"></div>
+  </section>
+  <section class="panel">
+   <h2>Pesquisa no índice SDI</h2>
+   <div class="toolbar">
+    <input id="searchQuery" placeholder="Ex.: immigration solicitor London" style="flex:1">
+    <button id="searchBtn">Pesquisar</button>
+   </div>
+   <div id="searchResults" style="margin-top:12px"><span class="muted">A pesquisa consulta apenas organizações e páginas já indexadas.</span></div>
+  </section>
+ </div>
+ <section class="panel">
+  <h2>Catálogo de fontes</h2>
+  <div id="sources"><span class="muted">A carregar fontes...</span></div>
+ </section>
+ <section class="panel">
+  <h2>Histórico de execuções</h2>
+  <div id="runs"><span class="muted">A carregar histórico...</span></div>
+ </section>
+ <section class="panel hidden" id="profilePanel">
+  <div class="toolbar" style="justify-content:space-between"><h2 id="profileTitle">Perfil</h2><button id="closeProfile" class="secondary">Fechar</button></div>
+  <div id="profileContent"></div>
+ </section>
+</section>
+</main>
+<script>
+let token = "";
+const $ = id => document.getElementById(id);
+function node(tag, text, cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=String(text);if(cls)el.className=cls;return el;}
+function setError(message){$("error").textContent=message||"";}
+async function api(path, options={}){
+ const response=await fetch(path,{...options,headers:{"Authorization":"Bearer "+token,"Content-Type":"application/json",...(options.headers||{})}});
+ const body=await response.json().catch(()=>({detail:"Resposta inválida do servidor"}));
+ if(!response.ok)throw new Error(body.detail||body.message||("HTTP "+response.status));
+ return body;
+}
+function fmt(value){return value?new Date(value.replace(" ","T")+"Z").toLocaleString():"Nunca";}
+function tag(value){const cls=value==="enabled"||value==="completed"||value==="processed"?"good":value==="blocked_pending_authorisation"||value==="queued"||value==="processing"?"warn":value==="failed"||value==="completed_with_errors"?"bad":"";return node("span",value||"unknown","tag "+cls);}
+async function connect(){
+ token=$("apiKey").value.trim();if(!token){setError("Insere a chave da consola.");return;}
+ try{const session=await api("/api/v1/console/session");$("connection").textContent="Ligado: "+session.client;$("connection").className="status ok";$("workspace").classList.remove("hidden");$("apiKey").value="";setError("");await refresh();}
+ catch(e){token="";$("connection").textContent="Falha na ligação";$("connection").className="status error";setError(e.message);}
+}
+async function refresh(){
+ try{
+  const [summary,sources,runs]=await Promise.all([api("/api/v1/console/summary"),api("/api/v1/sources"),api("/api/v1/discovery/runs?limit=12")]);
+  $("m-orgs").textContent=summary.organisations;$("m-pages").textContent=summary.indexed_pages;$("m-evidence").textContent=summary.evidence;$("m-sources").textContent=summary.enabled_sources;$("m-candidates").textContent=summary.external_candidates;$("m-duplicates").textContent=summary.duplicate_pages??0;
+  renderQueue(summary.recursive_queue||{});renderLatest(summary.latest_run,summary.latest_job);renderSources(sources.items||[]);renderRuns(runs.items||[]);
+  setError("");
+ }catch(e){setError(e.message);}
+}
+function renderQueue(queue){
+ const root=$("queueState");root.replaceChildren();
+ const labels=[["queued","Na fila"],["processing","Em execução"],["processed","Concluídos"],["failed","Falhados"],["depth_limited","Limite de profundidade"],["budget_limited","Limite de orçamento"]];
+ for(const [key,label] of labels){const item=node("span",label+": "+(queue[key]||0),"tag");root.append(item);}
+}
+function renderLatest(run,job){
+ const root=$("runState");root.replaceChildren();
+ if(!run&&!job){root.append(node("span","Ainda sem execução carregada.","muted"));return;}
+ if(run){const title=node("strong","Run #"+run.run_id+" · "+run.status);root.append(title);root.append(node("p","Início: "+fmt(run.started_at)+" · Fim: "+fmt(run.finished_at)));root.append(node("p","Páginas: "+run.pages_checked+" · Criadas: "+run.organisations_created+" · Actualizadas: "+run.organisations_updated+" · Datasets: "+run.datasets_imported));if(run.error)root.append(node("pre",run.error));}
+ if(job){root.append(node("p","Job #"+job.job_id+" · Estado: "+job.status));}
+}
+function renderSources(items){
+ const root=$("sources");root.replaceChildren();const table=node("table");const head=node("tr");["Fonte","Tipo","Estado","Último sucesso","Erro recente"].forEach(x=>head.append(node("th",x)));table.append(head);
+ for(const item of items){const tr=node("tr");tr.append(node("td",item.name));tr.append(node("td",item.source_type));const status=node("td");status.append(tag(item.status));tr.append(status);tr.append(node("td",fmt(item.last_success_at)));tr.append(node("td",item.last_error||""));table.append(tr);}
+ root.append(table);
+}
+function renderRuns(items){
+ const root=$("runs");root.replaceChildren();if(!items.length){root.append(node("span","Sem execuções registadas.","muted"));return;}
+ for(const run of items){const row=node("div",undefined,"result");const title=node("strong","Run #"+run.run_id+" · "+run.run_type+" · "+run.status);row.append(title);row.append(node("p","Seed: "+run.seed_url+" · Páginas: "+run.pages_checked+" · Candidatos: "+run.candidates_found));row.append(node("p","Início: "+fmt(run.started_at)+" · Fim: "+fmt(run.finished_at)));if(run.error)row.append(node("pre",run.error));root.append(row);}
+}
+function renderSearch(data){
+ const root=$("searchResults");root.replaceChildren();
+ const orgs=data.organisations||[],pages=data.pages||[];
+ root.append(node("p",orgs.length+" organizações · "+pages.length+" páginas"));
+ for(const org of orgs){const row=node("div",undefined,"result");row.append(node("strong",org.canonical_name));row.append(node("p",[org.city,org.region,org.organisation_type,org.regulator].filter(Boolean).join(" · ")));row.append(node("p",org.immigration_services||org.provider_categories||"Sem categorias registadas"));const profile=node("button","Ver evidência","secondary");profile.addEventListener("click",()=>loadProfile(org.organisation_id));row.append(profile);root.append(row);}
+ for(const page of pages){const row=node("div",undefined,"result");row.append(node("strong",page.title||page.url));row.append(node("p",(page.snippet||"").replace(/<\/?mark>/g,"")));const link=node("a","Abrir página");link.href=page.url;link.target="_blank";link.rel="noopener noreferrer";row.append(link);root.append(row);}
+ if(!orgs.length&&!pages.length)root.append(node("p","Nenhum resultado no índice actual.","muted"));
+}
+async function search(){
+ const query=$("searchQuery").value.trim();if(!query)return;
+ try{const params=new URLSearchParams({q:query,limit:"30"});const data=await api("/api/v1/search?"+params.toString());renderSearch(data);setError("");}
+ catch(e){setError(e.message);}
+}
+async function loadProfile(id){
+ try{const data=await api("/api/v1/organisations/"+id);$("profileTitle").textContent=data.organisation.canonical_name;$("profileContent").replaceChildren();
+ for(const ev of data.evidence||[]){const row=node("div",undefined,"result");row.append(node("strong",ev.field_name+": "+ev.field_value));row.append(node("p","Fonte: "+ev.source_authority+" · Estado: "+ev.evidence_status+" · Confiança: "+ev.confidence));row.append(node("p","Recolhida: "+fmt(ev.collected_at)+" · Dataset: "+(ev.dataset_as_of||"n/d")+" · Publicada: "+(ev.source_published_at||"n/d")));const a=node("a","Evidência original");a.href=ev.source_url;a.target="_blank";a.rel="noopener noreferrer";row.append(a);$("profileContent").append(row);}
+ $("profilePanel").classList.remove("hidden");$("profilePanel").scrollIntoView({behavior:"smooth"});
+ }catch(e){setError(e.message);}
+}
+async function runCycle(){
+ $("runBtn").disabled=true;$("runBtn").textContent="A executar...";
+ try{const result=await api("/api/v1/discovery/run",{method:"POST"});$("runState").replaceChildren(node("strong","Job #"+result.job_id+" · colocado na fila"));await pollJob(result.job_id);}
+ catch(e){setError(e.message);}
+ finally{$("runBtn").disabled=false;$("runBtn").textContent="Executar ciclo";await refresh();}
+}
+async function pollJob(id){
+ for(let i=0;i<90;i++){
+  const job=await api("/api/v1/discovery/jobs/"+id);
+  $("runState").replaceChildren(node("strong","Job #"+id+" · "+job.status));
+  if(job.result){const p=node("p","Páginas indexadas: "+(job.result.pages_indexed||0)+" · Domínios recursivos: "+(job.result.recursive_domains_processed||0)+" · Candidatos aceites: "+(job.result.seed_candidates_accepted||0));$("runState").append(p);}
+  if(["completed","completed_with_errors","failed"].includes(job.status))return;
+  await new Promise(resolve=>setTimeout(resolve,3000));
+ }
+ throw new Error("A execução continua activa. Actualiza o painel para consultar o estado.");
+}
+$("connectBtn").addEventListener("click",connect);$("refreshBtn").addEventListener("click",refresh);$("runBtn").addEventListener("click",runCycle);$("searchBtn").addEventListener("click",search);$("searchQuery").addEventListener("keydown",e=>{if(e.key==="Enter")search();});$("closeProfile").addEventListener("click",()=>$("profilePanel").classList.add("hidden"));
+</script>
+</body>
+</html>

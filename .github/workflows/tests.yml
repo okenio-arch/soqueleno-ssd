@@ -1,0 +1,24 @@
+name: SDI tests
+
+on:
+  push:
+    branches: ["main", "feature/**", "fix/**"]
+  pull_request:
+    branches: ["main", "fix/iaa-xlsx-import"]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q sdi tests main.py
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v

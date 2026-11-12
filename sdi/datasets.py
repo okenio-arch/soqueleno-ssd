@@ -11,7 +11,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .db import connect
-from .crawler import USER_AGENT, _robots_allows, validate_public_url, CrawlBlocked
+from .crawler import USER_AGENT, _robots_allows, validate_public_url, bounded_get, CrawlBlocked
 from .normalise import clean, normalise_name, normalise_url, domain_of
 from .iaa_import import import_iaa_xlsx
 
@@ -56,10 +56,10 @@ def download_govuk_xlsx(source: dict, db_path: str, *, timeout: int = 20, max_by
         raise ValueError("O coletor GOV.UK só aceita páginas oficiais gov.uk")
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
     robots_cache: dict[str, bool] = {}
-    with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
         if not _robots_allows(client, page_url, robots_cache):
             raise CrawlBlocked("robots.txt não autoriza a consulta da publicação GOV.UK")
-        page = client.get(page_url)
+        page = bounded_get(client, page_url, max_bytes=2_000_000, allowed_hosts={"gov.uk", "www.gov.uk"}, max_redirects=3)
         if page.status_code != 200 or "text/html" not in page.headers.get("content-type", "").lower():
             raise RuntimeError(f"Publicação GOV.UK indisponível: HTTP {page.status_code}")
         soup = BeautifulSoup(page.text, "html.parser")
@@ -78,7 +78,7 @@ def download_govuk_xlsx(source: dict, db_path: str, *, timeout: int = 20, max_by
         asset_url = matches[0][0]
         if not _robots_allows(client, asset_url, robots_cache):
             raise CrawlBlocked("robots.txt do host de ficheiros não autoriza o download")
-        asset = client.get(asset_url)
+        asset = bounded_get(client, asset_url, max_bytes=max_bytes, allowed_hosts={"assets.publishing.service.gov.uk"}, max_redirects=2)
         if asset.status_code != 200:
             raise RuntimeError(f"Download do dataset falhou: HTTP {asset.status_code}")
         data = asset.content
@@ -114,13 +114,34 @@ def _cell(row, cols: dict[str, int], field: str):
     return clean(row[idx])
 
 
+def _merge_categories(existing: str | None, incoming: str | None) -> str | None:
+    """Merge semicolon-delimited categories without accumulating duplicates."""
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw in (existing or "", incoming or ""):
+        for item in raw.split(";"):
+            value = clean(item)
+            key = value.casefold() if value else ""
+            if value and key not in seen:
+                seen.add(key)
+                values.append(value)
+    return "; ".join(values) or None
+
+
 def _evidence(conn, oid: int, source_id: str, source_url: str, field: str, value: str | None,
               published_at: str | None, dataset_as_of: str | None, status: str = "official_snapshot"):
     if value:
+        confidence = 0.90 if status == "official_snapshot" else 0.70
         conn.execute(
-            """INSERT OR IGNORE INTO evidence(organisation_id,source_id,source_url,field_name,field_value,source_published_at,dataset_as_of,evidence_status)
-            VALUES(?,?,?,?,?,?,?,?)""",
-            (oid, source_id, source_url, field, value, published_at, dataset_as_of, status),
+            """INSERT INTO evidence(organisation_id,source_id,source_url,field_name,field_value,
+            source_published_at,dataset_as_of,evidence_status,confidence,source_authority)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(organisation_id,source_id,source_url,field_name,field_value) DO UPDATE SET
+            collected_at=CURRENT_TIMESTAMP,source_published_at=excluded.source_published_at,
+            dataset_as_of=excluded.dataset_as_of,evidence_status=excluded.evidence_status,
+            confidence=excluded.confidence,source_authority=excluded.source_authority""",
+            (oid, source_id, source_url, field, value, published_at, dataset_as_of,
+             status, confidence, source_id),
         )
 
 
@@ -220,14 +241,19 @@ def import_provider_workbook(xlsx_path: str, db_path: str, source: dict, *, dry_
                 if row:
                     oid = row[0]
             if oid:
+                current = conn.execute(
+                    "SELECT provider_categories,immigration_services FROM organisations WHERE organisation_id=?",
+                    (oid,),
+                ).fetchone()
+                categories = _merge_categories(current["provider_categories"], r["category"])
+                services = _merge_categories(current["immigration_services"], r["category"])
                 conn.execute(
                     """UPDATE organisations SET website=coalesce(website,?),domain=coalesce(domain,?),address=coalesce(address,?),
                     postcode=coalesce(postcode,?),phone=coalesce(phone,?),public_email=coalesce(public_email,?),city=coalesce(city,?),
-                    region=coalesce(region,?),provider_categories=trim(coalesce(provider_categories,'') || CASE WHEN provider_categories IS NULL OR provider_categories='' THEN '' ELSE '; ' END || ?),
-                    immigration_services=trim(coalesce(immigration_services,'') || CASE WHEN immigration_services IS NULL OR immigration_services='' THEN '' ELSE '; ' END || ?),
+                    region=coalesce(region,?),provider_categories=?,immigration_services=?,
                     last_seen_at=CURRENT_TIMESTAMP,source_quality=max(source_quality,0.78) WHERE organisation_id=?""",
                     (r["website"], r["domain"], r["address"], r["postcode"], r["phone"], r["email"], r["city"], r["region"],
-                     r["category"], r["category"], oid),
+                     categories, services, oid),
                 )
                 result["updated"] += 1
             else:

@@ -210,9 +210,10 @@ def initialise(path: str = "data/sdi.sqlite3") -> None:
                 "postcode": "TEXT", "provider_categories": "TEXT", "source_quality": "REAL NOT NULL DEFAULT 0",
                 "website_last_crawled_at": "TEXT", "website_last_attempt_at": "TEXT", "website_crawl_status": "TEXT",
             },
-            "crawled_pages": {"is_indexable": "INTEGER NOT NULL DEFAULT 1"},
+            "crawled_pages": {"is_indexable": "INTEGER NOT NULL DEFAULT 1", "duplicate_of_url": "TEXT"},
+            "evidence": {"confidence": "REAL NOT NULL DEFAULT 0.5", "source_authority": "TEXT"},
+            "discovered_urls": {"anchor_text": "TEXT", "source_id": "TEXT", "depth": "INTEGER NOT NULL DEFAULT 0", "attempts": "INTEGER NOT NULL DEFAULT 0", "last_attempt_at": "TEXT", "last_error": "TEXT"},
             "discovery_runs": {"source_id": "TEXT", "run_type": "TEXT NOT NULL DEFAULT 'source_discovery'", "datasets_imported": "INTEGER NOT NULL DEFAULT 0"},
-            "discovered_urls": {"anchor_text": "TEXT"},
         }
         for table, additions in migrations.items():
             columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -222,13 +223,16 @@ def initialise(path: str = "data/sdi.sqlite3") -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_org_website_crawl ON organisations(website_last_crawled_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_org_website_attempt ON organisations(website_last_attempt_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_discovered_urls_status ON discovered_urls(status,discovered_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_discovered_urls_source_queue ON discovered_urls(source_id,status,depth,attempts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_evidence_field ON evidence(organisation_id,field_name,collected_at)")
+        conn.execute("""UPDATE evidence SET confidence=CASE evidence_status WHEN 'official_snapshot' THEN 0.90 WHEN 'official_register' THEN 0.95 WHEN 'website_observation' THEN 0.60 WHEN 'discovery_observation' THEN 0.55 ELSE 0.50 END WHERE confidence=0.5""")
         # One-time initial build of the expanded search index for databases upgraded from 0.7.
         marker = conn.execute("SELECT value FROM sdi_meta WHERE key='search_index_version'").fetchone()
-        if not marker or marker[0] != "1":
+        if not marker or marker[0] != "2":
             conn.execute("DELETE FROM sdi_org_search")
             conn.execute("""INSERT INTO sdi_org_search(rowid,canonical_name,domain,city,region,address,organisation_type,immigration_services,provider_categories,regulator,regulator_reference,public_email,phone,organisation_id)
                 SELECT organisation_id,canonical_name,coalesce(domain,''),coalesce(city,''),coalesce(region,''),coalesce(address,''),coalesce(organisation_type,''),coalesce(immigration_services,''),coalesce(provider_categories,''),coalesce(regulator,''),coalesce(regulator_reference,''),coalesce(public_email,''),coalesce(phone,''),organisation_id FROM organisations""")
             conn.execute("DELETE FROM sdi_page_search")
             conn.execute("""INSERT INTO sdi_page_search(rowid,title,description,text_content,url,organisation_id,page_id)
                 SELECT page_id,coalesce(title,''),coalesce(description,''),coalesce(text_content,''),url,coalesce(organisation_id,0),page_id FROM crawled_pages WHERE is_indexable=1""")
-            conn.execute("INSERT OR REPLACE INTO sdi_meta(key,value) VALUES('search_index_version','1')")
+            conn.execute("INSERT OR REPLACE INTO sdi_meta(key,value) VALUES('search_index_version','2')")

@@ -42,7 +42,10 @@
         "published_at": "2026-11-04",
         "dataset_as_of": "2026-11-04",
         "refresh_hours": 720,
-        "category_filter": ["immigration", "asylum"],
+        "category_filter": [
+          "immigration",
+          "asylum"
+        ],
         "authority_label": "Legal Aid Agency",
         "provider_type": "legal_aid_provider"
       }
@@ -65,7 +68,10 @@
         "published_at": "2026-11-09",
         "dataset_as_of": "2026-11-09",
         "refresh_hours": 168,
-        "category_filter": ["immigration", "asylum"],
+        "category_filter": [
+          "immigration",
+          "asylum"
+        ],
         "source_scope": "South West England remote access",
         "authority_label": "Legal Aid Agency",
         "provider_type": "legal_aid_provider"
@@ -88,10 +94,35 @@
       "category": "official_regulator_data_service",
       "priority": 51,
       "source_type": "manual_or_authorisation_pending",
-      "access_method": "registration_or_authorised_data_service",
+      "access_method": "registered_api_key_and_attribution",
       "status": "blocked_pending_authorisation",
       "url": "https://www.sra.org.uk/datasharing/",
-      "notes": "Not used: this is a programmatic data service/API and requires registration and terms review. The SDI build intentionally has no dependency on it."
+      "notes": "SRA Data Share API V1 offers free programmatic access to firm data, including authorisation status, websites and areas of law. A registered account and subscription key are required; the key must remain secret and attribution to the SRA is mandatory. Keep blocked until the operator registers, stores the key in the environment and completes adapter validation.",
+      "config": {
+        "api_product": "SRA Data Share API Version V1",
+        "registration_url": "https://sra-prod-apim.developer.azure-api.net/signup",
+        "attribution_url": "https://www.sra.org.uk/sra/how-we-work/privacy-data-information/data-sharing/attribution/",
+        "requires_secret": "SRA_DATA_SHARE_API_KEY",
+        "refresh_hours": 24,
+        "authority_label": "Solicitors Regulation Authority",
+        "status_semantics": "Use SRA authorisation status field; do not infer from listing alone."
+      }
+    },
+    {
+      "id": "iaa_adviser_finder",
+      "name": "Immigration Advice Authority - Adviser Finder",
+      "category": "official_regulator_live_directory",
+      "priority": 4,
+      "source_type": "manual_or_authorisation_pending",
+      "access_method": "official_service_temporarily_unavailable",
+      "status": "blocked_pending_authorisation",
+      "url": "https://oisc.my.site.com/s/adviser-finder",
+      "notes": "Do not crawl while the IAA Adviser Finder and Adviser Register are reported unavailable. Re-check the official GOV.UK service notice and collection terms before enabling. The IAA FOI XLSX is a dated snapshot, not live authorisation status.",
+      "config": {
+        "official_status_notice": "https://www.gov.uk/government/news/adviser-finder-and-adviser-register-temporarily-unavailable",
+        "last_confirmed_unavailable": "2026-11-09",
+        "authority_label": "Immigration Advice Authority"
+      }
     }
   ]
 }
