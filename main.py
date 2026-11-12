@@ -18,6 +18,7 @@ def main():
     p.add_argument("--max-pages",type=int,default=int(setting("SDI_MAX_PAGES_PER_SITE","20")))
     p.add_argument("--max-depth",type=int,default=int(setting("SDI_MAX_DEPTH","2"))); p.add_argument("--max-candidates",type=int,default=15)
     p.add_argument("--client",default="scout",help="Nome do consumidor para create-key, ex.: scout ou auren")
+    p.add_argument("--scopes",default="organisations:read",help="Scopes separados por vírgulas; ex.: organisations:read,discovery:run,sources:manage")
     args=p.parse_args()
     if args.command=="init":
         initialise(args.db); print(f"Base SDI inicializada: {args.db}")
@@ -46,8 +47,12 @@ def main():
     elif args.command=="create-key":
         initialise(args.db)
         key=secrets.token_urlsafe(40); digest=hashlib.sha256(key.encode("utf-8")).hexdigest()
+        allowed={"organisations:read","discovery:run","sources:manage"}
+        scopes=",".join(dict.fromkeys(x.strip() for x in args.scopes.split(",") if x.strip()))
+        if not scopes or any(scope not in allowed for scope in scopes.split(",")):
+            p.error("Scopes inválidos. Permitidos: "+", ".join(sorted(allowed)))
         with connect(args.db) as conn:
-            conn.execute("INSERT INTO api_clients(client_name,key_hash,scopes,is_active) VALUES(?,?,?,1) ON CONFLICT(client_name) DO UPDATE SET key_hash=excluded.key_hash,scopes=excluded.scopes,is_active=1,created_at=CURRENT_TIMESTAMP",(args.client,digest,"organisations:read"))
+            conn.execute("INSERT INTO api_clients(client_name,key_hash,scopes,is_active) VALUES(?,?,?,1) ON CONFLICT(client_name) DO UPDATE SET key_hash=excluded.key_hash,scopes=excluded.scopes,is_active=1,created_at=CURRENT_TIMESTAMP",(args.client,digest,scopes))
         print(f"Credencial criada para: {args.client}")
         print("Copia esta chave agora. A SDI guarda apenas o hash e não consegue voltar a mostrá-la:")
         print(key)
