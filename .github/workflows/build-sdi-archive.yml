@@ -1,0 +1,41 @@
+name: Build SDI source archive
+
+on:
+  push:
+    branches:
+      - build/sdi-download-archive
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout SDI
+        uses: actions/checkout@v4
+      - name: Build source ZIP
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          root = Path(".")
+          output = Path("Soqueleno-SSD-SDI-Complete.zip")
+          excluded = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", "data", "logs"}
+          with ZipFile(output, "w", ZIP_DEFLATED) as archive:
+              for path in root.rglob("*"):
+                  if not path.is_file() or path == output:
+                      continue
+                  if any(part in excluded for part in path.parts):
+                      continue
+                  if path.name == ".env":
+                      continue
+                  archive.write(path, Path("SOQUELENO SSD") / path)
+          print(f"Created {output} ({output.stat().st_size} bytes)")
+          PY
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: soqueleno-ssd-sdi-complete
+          path: Soqueleno-SSD-SDI-Complete.zip
+          if-no-files-found: error
