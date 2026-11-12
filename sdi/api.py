@@ -101,7 +101,7 @@ def console_summary(authorization: str | None = Header(default=None)):
         evidence = conn.execute("SELECT count(*) FROM evidence").fetchone()[0]
         sources = conn.execute("SELECT count(*) FROM sources WHERE status='enabled'").fetchone()[0]
         candidates = conn.execute("SELECT count(*) FROM discovered_urls WHERE status='candidate_only'").fetchone()[0]
-        queue_rows = conn.execute("SELECT status,count(*) AS total FROM discovered_urls WHERE discovery_type='recursive_seed' GROUP BY status").fetchall()
+        queue_rows = conn.execute("SELECT status,count(*) AS total FROM discovered_urls WHERE discovery_type='seed_page' GROUP BY status").fetchall()
         queue = {row["status"]: row["total"] for row in queue_rows}
         duplicates = conn.execute("SELECT count(*) FROM crawled_pages WHERE duplicate_of_url IS NOT NULL").fetchone()[0]
         evidence_rows = conn.execute("SELECT evidence_status,count(*) AS total FROM evidence GROUP BY evidence_status").fetchall()
