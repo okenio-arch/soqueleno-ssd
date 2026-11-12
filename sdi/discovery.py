@@ -81,7 +81,7 @@ def discover_from_seed(seed_url: str, db_path: str, *, max_candidates: int = 15,
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
 
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
             if not _robots_allows(client, seed, robots_cache):
                 raise CrawlBlocked("robots.txt não autoriza a consulta da fonte inicial")
             response = bounded_get(client, seed, max_bytes=2_000_000, allowed_hosts={(urlparse(seed).hostname or "").lower()})
