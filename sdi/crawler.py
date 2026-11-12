@@ -31,21 +31,31 @@ class CrawlBlocked(ValueError):
     pass
 
 
-def _public_host(host: str) -> bool:
+def _resolve_public_addresses(host: str) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return False
-    addresses = []
+    except socket.gaierror as exc:
+        raise CrawlBlocked("Host não resolvido") from exc
+    addresses = set()
     for info in infos:
         try:
             ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
+        except ValueError as exc:
+            raise CrawlBlocked("DNS devolveu um endereço IP inválido") from exc
         if not ip.is_global:
-            return False
-        addresses.append(ip)
-    return bool(addresses)
+            raise CrawlBlocked("Host resolve para um endereço IP não público")
+        addresses.add(ip)
+    if not addresses:
+        raise CrawlBlocked("Host sem endereços públicos")
+    return addresses
+
+
+def _public_host(host: str) -> bool:
+    try:
+        _resolve_public_addresses(host)
+        return True
+    except CrawlBlocked:
+        return False
 
 
 def validate_public_url(url: str) -> str:
@@ -75,18 +85,22 @@ def bounded_get(client: httpx.Client, url: str, *, max_bytes: int = 2_000_000,
             raise CrawlBlocked("Host fora da allowlist da fonte")
         # Re-resolve immediately before every network hop; redirects are never followed implicitly.
         current = validate_public_url(current)
+        expected_addresses = _resolve_public_addresses(host)
         request = client.build_request("GET", current)
         response = client.send(request, stream=True, follow_redirects=False)
         try:
             peer = response.extensions.get("network_stream")
-            if peer is not None:
-                address = peer.get_extra_info("server_addr")
-                if address:
-                    try:
-                        if not ipaddress.ip_address(address[0]).is_global:
-                            raise CrawlBlocked("A ligação terminou num endereço IP não público")
-                    except ValueError as exc:
-                        raise CrawlBlocked("Endereço IP remoto inválido") from exc
+            if peer is None:
+                raise CrawlBlocked("Não foi possível verificar o endereço IP remoto da ligação")
+            address = peer.get_extra_info("server_addr")
+            if not address:
+                raise CrawlBlocked("A ligação não revelou o endereço IP remoto")
+            try:
+                peer_ip = ipaddress.ip_address(address[0])
+            except ValueError as exc:
+                raise CrawlBlocked("Endereço IP remoto inválido") from exc
+            if not peer_ip.is_global or peer_ip not in expected_addresses:
+                raise CrawlBlocked("O IP remoto não corresponde à resolução DNS pública validada")
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = response.headers.get("location")
                 if not location or hop >= max_redirects:
@@ -132,7 +146,7 @@ def _robots_parser(client: httpx.Client, url: str, cache: dict[str, RobotFilePar
         parser.parse(response.text.splitlines() if response.status_code < 400 else [])
         cache[origin] = parser
         return parser
-    except httpx.HTTPError:
+    except (httpx.HTTPError, CrawlBlocked):
         cache[origin] = None
         return None
 
@@ -146,16 +160,7 @@ def _robots_allows(client: httpx.Client, url: str, cache: dict) -> bool:
 
 def _sitemaps(client: httpx.Client, origin: str, robots_cache: dict, max_urls: int) -> list[str]:
     parser = _robots_parser(client, origin + "/", robots_cache)
-    sitemap_urls = []
-    # RobotFileParser does not expose Sitemap directives; parse robots.txt separately.
-    try:
-        resp = bounded_get(client, origin.rstrip("/") + "/robots.txt", max_bytes=512_000)
-        if resp.status_code == 200:
-            for line in resp.text.splitlines():
-                if line.lower().startswith("sitemap:"):
-                    sitemap_urls.append(line.split(":", 1)[1].strip())
-    except httpx.HTTPError:
-        return []
+    sitemap_urls = parser.site_maps() if parser else []
     urls: list[str] = []
     for sitemap in sitemap_urls[:3]:
         try:
@@ -246,7 +251,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
     errors: list[dict] = []
     robots_cache: dict = {}
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
-    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers, trust_env=False) as client:
         # The sitemap is an index of the same public website, not a search-engine API.
         for sitemap_url in _sitemaps(client, f"{urlparse(start).scheme}://{urlparse(start).netloc}", robots_cache, max_pages):
             queue.append((sitemap_url, 1))
