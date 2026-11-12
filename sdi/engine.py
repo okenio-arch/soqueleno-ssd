@@ -112,6 +112,8 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     with connect(db_path) as conn:
                         conn.execute("UPDATE sources SET last_success_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (sid,))
                     report["sources_run"] += 1
+                    report["pages_indexed"] += int(result.get("pages_checked", 0))
+                    report["external_candidates_recorded"] += int(result.get("candidates_found", 0))
                     report["organisations_created"] += int(result.get("organisations_created", 0))
                     report["organisations_updated"] += int(result.get("organisations_updated", 0))
                     report["results"].append({"source_id": sid, "name": source["name"], **result})
