@@ -167,8 +167,14 @@ def _service_signals(text: str) -> list[str]:
 def _ensure_website_source(db_path: str) -> None:
     with connect(db_path) as conn:
         conn.execute(
-            """INSERT OR IGNORE INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
-            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(source_id) DO UPDATE SET
+                url=excluded.url,
+                name=excluded.name,
+                notes=excluded.notes,
+                source_type=excluded.source_type,
+                updated_at=CURRENT_TIMESTAMP""",
             (SOURCE_ID, "Imported organisation websites", "sdi://organisation-websites", "organisation_websites", 20,
              "robots_checked_http", "enabled", "Limited crawl of websites listed by official datasets or approved sources; same-site pages only.",
              "website_crawl", "{}"),
