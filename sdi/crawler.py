@@ -235,6 +235,22 @@ def _parse_page(response: httpx.Response) -> tuple[str, str, str, BeautifulSoup,
     return title[:500], description[:1200], text, soup, noindex
 
 
+def _indexable_page(url: str, title: str, description: str, text: str) -> bool:
+    """Reject navigation, account, archive and thin pages before search indexing."""
+    path = (urlparse(url).path or "/").casefold()
+    blocked_segments = (
+        "/wp-admin", "/wp-login", "/login", "/logout", "/register",
+        "/search", "/tag/", "/category/", "/author/", "/feed",
+        "/privacy", "/cookie", "/terms", "/accessibility",
+    )
+    if any(segment in path for segment in blocked_segments):
+        return False
+    if re.search(r"/(page|tag|category)/\\d+/?$", path):
+        return False
+    body = clean(" ".join((title or "", description or "", text or ""))) or ""
+    return len(body) >= 220
+
+
 def _generic_email(text: str) -> str | None:
     for email in re.findall(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", text or "", re.I):
         local = email.split("@", 1)[0].casefold()
@@ -283,6 +299,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
     queue = deque([(canonical_page_url(start), 0)])
     seen: set[str] = set()
     pages = external_candidates = 0
+    indexed_pages = excluded_pages = 0
     errors: list[dict] = []
     robots_cache: dict = {}
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
@@ -318,16 +335,17 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                 title, description, text, soup, noindex = _parse_page(response)
                 digest = hashlib.sha256((title + "\n" + description + "\n" + text).encode("utf-8")).hexdigest()
                 final_url = str(response.url)
-                if noindex or "noindex" in response.headers.get("x-robots-tag", "").casefold():
-                    with connect(db_path) as conn:
-                        conn.execute("UPDATE crawled_pages SET is_indexable=0,fetched_at=CURRENT_TIMESTAMP WHERE url=?", (url,))
-                    continue
+                indexable = not noindex and "noindex" not in response.headers.get("x-robots-tag", "").casefold()
+                indexable = indexable and _indexable_page(url, title, description, text)
                 with connect(db_path) as conn:
+                    previous = conn.execute(
+                        "SELECT page_id,content_hash FROM crawled_pages WHERE url=?", (url,)
+                    ).fetchone()
                     duplicate = conn.execute(
                         """SELECT url FROM crawled_pages WHERE organisation_id=? AND content_hash=?
                         AND url<>? AND is_indexable=1 ORDER BY fetched_at ASC LIMIT 1""",
                         (organisation_id, digest, url),
-                    ).fetchone()
+                    ).fetchone() if indexable else None
                     canonical_url = duplicate["url"] if duplicate else None
                     conn.execute(
                         """INSERT INTO crawled_pages(organisation_id,source_id,url,final_url,http_status,title,description,text_content,content_hash,crawl_status,depth,is_indexable,duplicate_of_url)
@@ -337,10 +355,21 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                         fetched_at=CURRENT_TIMESTAMP,crawl_status='success',error=NULL,depth=excluded.depth,is_indexable=excluded.is_indexable,
                         duplicate_of_url=excluded.duplicate_of_url""",
                         (organisation_id, SOURCE_ID, url, final_url, response.status_code, title, description, text, digest, depth,
-                         0 if canonical_url else 1, canonical_url),
+                         0 if canonical_url or not indexable else 1, canonical_url),
                     )
-                    if canonical_url:
+                    page_row = conn.execute("SELECT page_id FROM crawled_pages WHERE url=?", (url,)).fetchone()
+                    page_id = int(page_row["page_id"])
+                    if not previous or previous["content_hash"] != digest:
+                        change_type = "new" if not previous else "changed"
+                        conn.execute(
+                            """INSERT OR IGNORE INTO page_versions
+                            (page_id,organisation_id,source_id,url,content_hash,title,description,text_content,change_type)
+                            VALUES(?,?,?,?,?,?,?,?,?)""",
+                            (page_id, organisation_id, SOURCE_ID, url, digest, title, description, text, change_type),
+                        )
+                    if canonical_url or not indexable:
                         pages += 1
+                        excluded_pages += 1
                         continue
                     fields = {"website_page_title": title, "website_page_description": description}
                     signals = _service_signals(f"{title} {description} {text}")
@@ -394,6 +423,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                             if cur.rowcount > 0:
                                 external_candidates += 1
                 pages += 1
+                indexed_pages += 1
                 if delay > 0:
                     time.sleep(delay)
             except (httpx.HTTPError, CrawlBlocked, ValueError) as exc:
@@ -403,5 +433,6 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
         conn.execute("UPDATE organisations SET website_crawl_status=?,website_last_crawled_at=CASE WHEN ? > 0 THEN CURRENT_TIMESTAMP ELSE website_last_crawled_at END WHERE organisation_id=?",
                      (final_status, pages, organisation_id))
     return {"organisation_id": organisation_id, "start_url": start, "pages_crawled": pages,
-            "unique_urls_seen": len(seen), "external_candidates_recorded": external_candidates,
+            "unique_urls_seen": len(seen), "pages_indexed": indexed_pages,
+            "pages_excluded": excluded_pages, "external_candidates_recorded": external_candidates,
             "crawl_status": final_status, "errors": errors}

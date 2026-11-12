@@ -35,6 +35,15 @@ def _source_due(conn, source_id: str, refresh_hours: int) -> bool:
     return not row or row["last_success_at"] is None or float(row["age_hours"] or 0) >= max(1, refresh_hours)
 
 
+def _source_has_pending_seed_pages(conn, source_id: str) -> bool:
+    row = conn.execute(
+        """SELECT 1 FROM discovered_urls WHERE source_id=? AND discovery_type='seed_page'
+        AND status IN ('queued','failed') AND attempts<3 LIMIT 1""",
+        (source_id,),
+    ).fetchone()
+    return bool(row)
+
+
 def recover_interrupted_work(db_path: str | None = None) -> dict:
     """Mark stale jobs and runs interrupted after a process restart."""
     db_path = db_path or str(ROOT / "data" / "sdi.sqlite3")
@@ -55,7 +64,18 @@ def recover_interrupted_work(db_path: str | None = None) -> dict:
             error=coalesce(error,'Recovered after process interruption')
             WHERE status='running' AND julianday('now')-julianday(started_at) > (15.0/1440.0)"""
         ).rowcount
-    return {"jobs_interrupted": jobs + queued, "runs_interrupted": runs}
+        frontier_requeued = conn.execute(
+            """UPDATE discovered_urls SET status='queued',
+            last_error=coalesce(last_error,'Recovered after process interruption')
+            WHERE discovery_type='seed_page' AND status='processing' AND attempts<3"""
+        ).rowcount
+        frontier_exhausted = conn.execute(
+            """UPDATE discovered_urls SET status='failed',
+            last_error=coalesce(last_error,'Maximum seed page attempts reached after interruption')
+            WHERE discovery_type='seed_page' AND status='processing' AND attempts>=3"""
+        ).rowcount
+    return {"jobs_interrupted": jobs + queued, "runs_interrupted": runs,
+            "frontier_requeued": frontier_requeued, "frontier_exhausted": frontier_exhausted}
 
 
 def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait_for_lock: bool = False) -> dict:
@@ -73,8 +93,8 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
         "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
         "sources_considered": 0, "sources_run": 0, "datasets_imported": 0,
         "records_seen": 0, "records_accepted": 0, "organisations_created": 0,
-        "organisations_updated": 0, "websites_crawled": 0, "pages_indexed": 0,
-        "external_candidates_recorded": 0, "seed_pages_checked": 0,
+        "organisations_updated": 0, "websites_crawled": 0, "pages_crawled": 0, "pages_indexed": 0,
+        "external_candidates_recorded": 0, "seed_pages_checked": 0, "seed_pages_remaining": 0,
         "recursive_domains_processed": 0, "seed_candidates_found": 0, "seed_candidates_accepted": 0, "seed_candidates_rejected": 0,
         "results": [], "errors": [],
     }
@@ -99,7 +119,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
             cfg = source["config"]
             refresh_hours = int(cfg.get("refresh_hours", 720))
             with connect(db_path) as conn:
-                due = force or _source_due(conn, sid, refresh_hours)
+                due = force or _source_due(conn, sid, refresh_hours) or (source["source_type"] == "html_directory_seed" and _source_has_pending_seed_pages(conn, sid))
             if not due:
                 report["results"].append({"source_id": sid, "name": source["name"], "status": "fresh", "reason": f"Atualizada há menos de {refresh_hours} horas"})
                 continue
@@ -129,8 +149,8 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                         continue
                     result = discover_recursive_from_seed(
                         source["url"], db_path, source_id=sid,
-                        max_depth=int(cfg.get("recursive_max_depth", setting("SDI_RECURSIVE_MAX_DEPTH", "2"))),
-                        max_domains=int(cfg.get("recursive_max_domains", setting("SDI_RECURSIVE_MAX_DOMAINS", "30"))),
+                        max_seed_depth=int(cfg.get("max_seed_depth", setting("SDI_MAX_SEED_DEPTH", "2"))),
+                        max_seed_pages=int(cfg.get("max_seed_pages", setting("SDI_MAX_SEED_PAGES", "8"))),
                         max_candidates_per_seed=int(cfg.get("max_candidates_per_run", 20)),
                         timeout=timeout,
                         delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "1.0")),
@@ -145,6 +165,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                                          (json.dumps(source_errors[:5], ensure_ascii=False)[:1000] or result.get("status", "incomplete"), sid))
                     report["sources_run"] += 1
                     report["seed_pages_checked"] += int(result.get("pages_checked", 0))
+                    report["seed_pages_remaining"] += int(result.get("seed_pages_remaining", 0))
                     report["recursive_domains_processed"] += int(result.get("domains_processed", 0))
                     report["seed_candidates_found"] += int(result.get("candidates_found", 0))
                     report["seed_candidates_accepted"] += int(result.get("candidates_accepted", 0))
@@ -186,7 +207,8 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "0.8")),
                 )
                 report["websites_crawled"] += 1
-                report["pages_indexed"] += int(result.get("pages_crawled", 0))
+                report["pages_crawled"] += int(result.get("pages_crawled", 0))
+                report["pages_indexed"] += int(result.get("pages_indexed", 0))
                 report["external_candidates_recorded"] += int(result.get("external_candidates_recorded", 0))
                 if result.get("errors"):
                     report["errors"].extend({"organisation_id": target["organisation_id"], **x} for x in result["errors"][:5])
@@ -203,7 +225,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                 conn.execute(
                     """UPDATE discovery_runs SET finished_at=CURRENT_TIMESTAMP,pages_checked=?,candidates_found=?,
                     organisations_created=?,organisations_updated=?,datasets_imported=?,status=?,error=? WHERE run_id=?""",
-                    (report["pages_indexed"] + report["seed_pages_checked"], report["seed_candidates_found"], report["organisations_created"],
+                    (report["pages_crawled"] + report["seed_pages_checked"], report["seed_candidates_found"], report["organisations_created"],
                      report["organisations_updated"], report["datasets_imported"], report["status"],
                      json.dumps(report["errors"][:10], ensure_ascii=False) if report["errors"] else None, run_id),
                 )

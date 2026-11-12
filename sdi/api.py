@@ -35,6 +35,8 @@ class SourceCreate(BaseModel):
     terms_reviewed: bool = False
     crawl_allowed: bool = False
     max_candidates_per_run: int = Field(default=20, ge=1, le=50)
+    max_seed_depth: int = Field(default=2, ge=0, le=4)
+    max_seed_pages: int = Field(default=8, ge=1, le=30)
 
 
 class SourceStatus(BaseModel):
@@ -99,7 +101,7 @@ def console_summary(authorization: str | None = Header(default=None)):
         evidence = conn.execute("SELECT count(*) FROM evidence").fetchone()[0]
         sources = conn.execute("SELECT count(*) FROM sources WHERE status='enabled'").fetchone()[0]
         candidates = conn.execute("SELECT count(*) FROM discovered_urls WHERE status='candidate_only'").fetchone()[0]
-        queue_rows = conn.execute("SELECT status,count(*) AS total FROM discovered_urls WHERE discovery_type='recursive_seed' GROUP BY status").fetchall()
+        queue_rows = conn.execute("SELECT status,count(*) AS total FROM discovered_urls WHERE discovery_type='seed_page' GROUP BY status").fetchall()
         queue = {row["status"]: row["total"] for row in queue_rows}
         duplicates = conn.execute("SELECT count(*) FROM crawled_pages WHERE duplicate_of_url IS NOT NULL").fetchone()[0]
         evidence_rows = conn.execute("SELECT evidence_status,count(*) AS total FROM evidence GROUP BY evidence_status").fetchall()
@@ -182,6 +184,8 @@ def add_source(payload: SourceCreate, authorization: str | None = Header(default
         "terms_reviewed": True, "crawl_allowed": True, "reuse_basis": payload.reuse_basis,
         "terms_url": payload.terms_url, "max_candidates_per_run": payload.max_candidates_per_run,
         "refresh_hours": 168, "license": payload.reuse_basis,
+        "max_seed_depth": payload.max_seed_depth,
+        "max_seed_pages": payload.max_seed_pages,
     }
     with connect(db_path()) as conn:
         conn.execute("""INSERT INTO sources(source_id,name,url,category,priority,access_method,status,notes,source_type,config_json)
@@ -214,6 +218,42 @@ def update_source_status(source_id: str, payload: SourceStatus, authorization: s
                     raise HTTPException(status_code=400, detail="A fonte precisa de revisão de termos e base de reutilização antes de ser ativada.")
         conn.execute("UPDATE sources SET status=?,updated_at=CURRENT_TIMESTAMP WHERE source_id=?", (payload.status, source_id))
     return {"source_id": source_id, "status": payload.status}
+
+
+@app.get("/api/v1/discovery/frontier")
+def discovery_frontier(limit: int = Query(default=50, ge=1, le=200),
+                       authorization: str | None = Header(default=None)):
+    authenticate(authorization)
+    with connect(db_path()) as conn:
+        counts = conn.execute(
+            "SELECT status,count(*) AS total FROM discovered_urls GROUP BY status"
+        ).fetchall()
+        rows = conn.execute(
+            """SELECT url_id,parent_url,discovered_url,domain,discovery_type,status,
+            anchor_text,source_id,depth,attempts,last_attempt_at,last_error,discovered_at
+            FROM discovered_urls ORDER BY
+            CASE status WHEN 'queued' THEN 0 WHEN 'candidate_only' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
+            discovered_at DESC LIMIT ?""", (limit,)
+        ).fetchall()
+    return {"counts": {row["status"]: row["total"] for row in counts},
+            "items": [dict(row) for row in rows]}
+
+
+@app.get("/api/v1/discovery/changes")
+def discovery_changes(days: int = Query(default=30, ge=1, le=365),
+                      limit: int = Query(default=100, ge=1, le=500),
+                      authorization: str | None = Header(default=None)):
+    authenticate(authorization)
+    with connect(db_path()) as conn:
+        rows = conn.execute(
+            """SELECT v.version_id,v.page_id,v.organisation_id,o.canonical_name,
+            v.source_id,v.url,v.content_hash,v.title,v.change_type,v.captured_at
+            FROM page_versions v LEFT JOIN organisations o ON o.organisation_id=v.organisation_id
+            WHERE v.captured_at >= datetime('now', ?)
+            ORDER BY v.captured_at DESC LIMIT ?""",
+            (f"-{days} days", limit),
+        ).fetchall()
+    return {"days": days, "items": [dict(row) for row in rows]}
 
 
 @app.post("/api/v1/discovery/run", status_code=202)

@@ -1,6 +1,18 @@
 {
   "version": "0.8.0",
   "market": "UK immigration legal services",
+  "seed_policy": {
+    "manual_approval_required": true,
+    "terms_reviewed_required": true,
+    "crawl_allowed_required": true,
+    "reuse_basis_required": true,
+    "default_max_seed_pages": 8,
+    "default_max_seed_depth": 2,
+    "max_seed_pages": 30,
+    "max_seed_depth": 4,
+    "candidate_domains_are_never_promoted_to_seeds_automatically": true,
+    "candidate_websites_are_fetched_only_for_relevance_verification": true
+  },
   "sources": [
     {
       "id": "iaa_foi_register",
