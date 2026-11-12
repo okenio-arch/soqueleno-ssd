@@ -73,7 +73,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
         "status": "running", "started_at": datetime.now(timezone.utc).isoformat(),
         "sources_considered": 0, "sources_run": 0, "datasets_imported": 0,
         "records_seen": 0, "records_accepted": 0, "organisations_created": 0,
-        "organisations_updated": 0, "websites_crawled": 0, "pages_indexed": 0,
+        "organisations_updated": 0, "websites_crawled": 0, "pages_crawled": 0, "pages_indexed": 0,
         "external_candidates_recorded": 0, "seed_pages_checked": 0,
         "recursive_domains_processed": 0, "seed_candidates_found": 0, "seed_candidates_accepted": 0, "seed_candidates_rejected": 0,
         "results": [], "errors": [],
@@ -186,6 +186,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                     delay=float(setting("SDI_REQUEST_DELAY_SECONDS", "0.8")),
                 )
                 report["websites_crawled"] += 1
+                report["pages_crawled"] += int(result.get("pages_crawled", 0))
                 report["pages_indexed"] += int(result.get("pages_indexed", 0))
                 report["external_candidates_recorded"] += int(result.get("external_candidates_recorded", 0))
                 if result.get("errors"):
@@ -203,7 +204,7 @@ def run_discovery_cycle(db_path: str | None = None, *, force: bool = False, wait
                 conn.execute(
                     """UPDATE discovery_runs SET finished_at=CURRENT_TIMESTAMP,pages_checked=?,candidates_found=?,
                     organisations_created=?,organisations_updated=?,datasets_imported=?,status=?,error=? WHERE run_id=?""",
-                    (report["pages_indexed"] + report["seed_pages_checked"], report["seed_candidates_found"], report["organisations_created"],
+                    (report["pages_crawled"] + report["seed_pages_checked"], report["seed_candidates_found"], report["organisations_created"],
                      report["organisations_updated"], report["datasets_imported"], report["status"],
                      json.dumps(report["errors"][:10], ensure_ascii=False) if report["errors"] else None, run_id),
                 )
