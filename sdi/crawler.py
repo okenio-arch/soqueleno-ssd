@@ -162,7 +162,7 @@ def _sitemaps(client: httpx.Client, origin: str, robots_cache: dict, max_urls: i
             sitemap = validate_public_url(sitemap)
             if not _robots_allows(client, sitemap, robots_cache):
                 continue
-            response = bounded_get(client, sitemap, max_bytes=2_000_000)
+            response = bounded_get(client, sitemap, max_bytes=2_000_000, allowed_hosts={(urlparse(origin).hostname or "").lower()})
             if response.status_code != 200:
                 continue
             root = ET.fromstring(response.content)
@@ -262,7 +262,7 @@ def crawl_organisation(organisation_id: int, start_url: str, db_path: str, *, ma
                 if not _robots_allows(client, url, robots_cache):
                     errors.append({"url": url, "error": "robots.txt não autoriza ou não pôde ser consultado"})
                     continue
-                response = bounded_get(client, url, max_bytes=2_000_000)
+                response = bounded_get(client, url, max_bytes=2_000_000, allowed_hosts={(urlparse(start).hostname or "").lower()})
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("location")
                     if location:
